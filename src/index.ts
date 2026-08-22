@@ -3,6 +3,7 @@ import process from "node:process";
 import { access, realpath } from "node:fs/promises";
 import { runAgent } from "./agent.js";
 import { loadConfig } from "./config.js";
+import { deriveDefaultBranchName } from "./branch.js";
 import { Repository } from "./repository.js";
 
 interface CliOptions {
@@ -10,18 +11,26 @@ interface CliOptions {
   task: string;
   model?: string;
   maxSteps?: number;
+  branch?: string;
 }
 
 async function main(): Promise<void> {
   loadEnvironment();
   const options = parseCli(process.argv.slice(2));
+  // Validate local configuration before changing the target repository.
+  const config = loadConfig({ model: options.model, maxSteps: options.maxSteps });
   await access(options.repo);
   const root = await realpath(options.repo);
   const repository = new Repository(root);
   await repository.assertGitRepository();
+  await repository.assertCleanWorkingTree();
 
-  const report = await runAgent(loadConfig({ model: options.model, maxSteps: options.maxSteps }), repository, options.task);
-  console.log(renderReport(report));
+  const originalBranch = await repository.currentBranch();
+  const createdBranch = options.branch ?? deriveDefaultBranchName(options.task);
+  await repository.createAndCheckoutBranch(createdBranch);
+
+  const report = await runAgent(config, repository, options.task);
+  console.log(renderReport(report, originalBranch, createdBranch));
 }
 
 function loadEnvironment(): void {
@@ -50,20 +59,21 @@ function parseCli(args: string[]): CliOptions {
   const maxStepsValue = values.get("max-steps");
   const maxSteps = maxStepsValue ? Number(maxStepsValue) : undefined;
   if (maxStepsValue && !Number.isSafeInteger(maxSteps)) usage();
-  return { repo: path.resolve(repo), task, model: values.get("model"), maxSteps };
+  return { repo: path.resolve(repo), task, model: values.get("model"), maxSteps, branch: values.get("branch") };
 }
 
 function usage(): never {
-  throw new Error("Usage: npm run dev -- --repo /absolute/path/to/repo --task \"Describe the change\" [--model model] [--max-steps 12]");
+  throw new Error("Usage: npm run dev -- --repo /absolute/path/to/repo --task \"Describe the change\" [--branch name] [--model model] [--max-steps 12]");
 }
 
-function renderReport(report: Awaited<ReturnType<typeof runAgent>>): string {
+function renderReport(report: Awaited<ReturnType<typeof runAgent>>, originalBranch: string, createdBranch: string): string {
   const tests = report.testRuns.length === 0
     ? "No tests were run."
     : report.testRuns.map(({ command, result }) => `$ ${command}\nexit ${result.exitCode}\n${result.output}`).join("\n\n");
   return [
     "\n=== Guillermo report ===",
     `Summary: ${report.summary}`,
+    `\nBranches:\nOriginal: ${originalBranch}\nWorking: ${createdBranch}`,
     `\nTool events:\n${report.events.join("\n") || "No tools were called."}`,
     `\nChanged files:\n${report.changedFiles.join("\n") || "No changes."}`,
     `\nTests:\n${tests}`,
