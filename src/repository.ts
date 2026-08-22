@@ -2,15 +2,17 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { resolveRepositoryPath, validatePatch, validateTestCommand } from "./safety.js";
+import { parseTestCommand, resolveRepositoryPath, validatePatch, validateTestCommand } from "./safety.js";
 
 const execFileAsync = promisify(execFile);
 const IGNORED_DIRECTORIES = new Set([".git", "node_modules", "dist", "coverage", ".guillermo"]);
 const MAX_FILE_BYTES = 100_000;
+const TEST_TIMEOUT_MS = 120_000;
 
 export interface CommandResult {
   exitCode: number;
   output: string;
+  skipped?: boolean;
 }
 
 export class Repository {
@@ -27,6 +29,8 @@ export class Repository {
       if (entries.length >= maxEntries) return;
       for (const entry of await readdir(directory, { withFileTypes: true })) {
         if (entries.length >= maxEntries) return;
+        // Generated and dependency trees add noise and can be disproportionately
+        // large; they are never useful context for this local agent.
         if (entry.isDirectory() && IGNORED_DIRECTORIES.has(entry.name)) continue;
         const fullPath = path.join(directory, entry.name);
         const relative = path.relative(this.root, fullPath).split(path.sep).join("/");
@@ -51,17 +55,28 @@ export class Repository {
   }
 
   async applyPatch(patch: string): Promise<CommandResult> {
-    validatePatch(patch, this.root);
-    await this.runGit(["apply", "--check", "--whitespace=error-all", "-"], patch);
+    await this.checkPatch(patch);
     const { stdout, stderr } = await this.runGit(["apply", "--whitespace=error-all", "-"], patch);
     return { exitCode: 0, output: compactOutput(`${stdout}${stderr}`) };
   }
 
+  async checkPatch(patch: string): Promise<void> {
+    // Validate both our conservative policy and Git's view of patch context
+    // before an approved run has any write effect.
+    validatePatch(patch, this.root);
+    await this.runGit(["apply", "--check", "--whitespace=error-all", "-"], patch);
+  }
+
   async runTests(command: string): Promise<CommandResult> {
-    const safeCommand = validateTestCommand(command);
-    const [program, ...args] = safeCommand.split(/\s+/);
+    // execFile receives an argument vector, never a shell command string.
+    // The parser is also used for dry runs so previews and execution agree.
+    const [program, ...args] = parseTestCommand(command);
     try {
-      const { stdout, stderr } = await execFileAsync(program, args, { cwd: this.root, maxBuffer: 500_000 });
+      const { stdout, stderr } = await execFileAsync(program, args, {
+        cwd: this.root,
+        maxBuffer: 500_000,
+        timeout: TEST_TIMEOUT_MS,
+      });
       return { exitCode: 0, output: compactOutput(`${stdout}${stderr}`) };
     } catch (error) {
       const result = error as { code?: number; stdout?: string; stderr?: string; message: string };
@@ -70,6 +85,11 @@ export class Repository {
         output: compactOutput(`${result.stdout ?? ""}${result.stderr ?? ""}\n${result.message}`),
       };
     }
+  }
+
+  previewTests(command: string): CommandResult {
+    const safeCommand = validateTestCommand(command);
+    return { exitCode: 0, skipped: true, output: `Dry run: would execute ${safeCommand}` };
   }
 
   async diff(): Promise<string> {

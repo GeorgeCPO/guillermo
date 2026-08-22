@@ -11,7 +11,7 @@ Given a task and a target Git repository, Guillermo asks an OpenAI model to use 
 3. `apply_patch` — apply a validated unified diff.
 4. `run_tests` — run a package-manager test command from a small allowlist.
 
-After the run, it prints the test result, changed files, and the complete Git diff. Guillermo has no general shell tool and refuses patches outside the selected repository.
+After the run, it prints the test result, changed files, and the complete Git diff. Every run happens in a detached, temporary Git worktree; the selected checkout is never changed. Guillermo has no general shell tool and refuses patches outside the selected repository.
 
 ## Setup
 
@@ -32,6 +32,12 @@ npm run dev -- \
   --task "Add a test for the URL parser and fix any bug the test identifies"
 ```
 
+Runs default to `--dry-run`: patches are checked but not applied, and tests are validated but not executed. Add `--approve` only after reviewing the task; approved patches and tests run in the disposable worktree and are discarded after Guillermo prints the diff.
+
+```bash
+npm run dev -- --repo /path/to/repo --task "..." --approve
+```
+
 Use `--model` to override `GUILLERMO_MODEL`, or `--max-steps` to cap tool calls:
 
 ```bash
@@ -41,8 +47,9 @@ npm run dev -- --repo /path/to/repo --task "..." --max-steps 12
 ## Deliberate limits
 
 - It does not create branches, commits, pull requests, or network requests.
+- It requires a clean source checkout before creating its disposable worktree.
 - It uses one persisted-in-process event stream only; durable run storage comes later with Jira.
 - `apply_patch` accepts only repository-relative text-file patches and blocks sensitive paths such as `.env`, `.git`, `node_modules`, and lockfiles.
-- `run_tests` permits `npm`, `pnpm`, `yarn`, or `bun` test commands only, without shell operators.
+- `run_tests` permits only `test` and `test:*` package scripts (or `bun test`), with no shell syntax and narrowly validated arguments; each command has a two-minute timeout.
 
 This is an intentional first slice of the 12-factor approach: prompts are owned in source, the context is selected by tools, actions are structured outputs, and TypeScript—not the LLM—owns the control flow.
