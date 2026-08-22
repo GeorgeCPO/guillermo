@@ -45,6 +45,11 @@ export class Repository {
     }
   }
 
+  async headCommit(): Promise<string> {
+    const { stdout } = await this.runGit(["rev-parse", "HEAD"]);
+    return stdout.trim();
+  }
+
   async createAndCheckoutBranch(branchName: string): Promise<void> {
     await this.assertValidNewBranchName(branchName);
     if (await this.localBranchExists(branchName)) {
