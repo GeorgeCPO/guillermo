@@ -26,6 +26,39 @@ export class Repository {
     await this.runGit(["rev-parse", "--is-inside-work-tree"]);
   }
 
+  async assertCleanWorkingTree(): Promise<void> {
+    const { stdout } = await this.runGit(["status", "--porcelain=v1", "--untracked-files=all"]);
+    if (stdout.trim()) {
+      throw new Error("Target repository has a dirty working tree. Commit, stash, or discard its changes before running Guillermo.");
+    }
+  }
+
+  async currentBranch(): Promise<string> {
+    try {
+      const { stdout } = await this.runGit(["symbolic-ref", "--quiet", "--short", "HEAD"]);
+      return stdout.trim();
+    } catch (error) {
+      const result = error as { code?: number };
+      if (result.code !== 1) throw error;
+      const { stdout } = await this.runGit(["rev-parse", "--short", "HEAD"]);
+      return `detached HEAD at ${stdout.trim()}`;
+    }
+  }
+
+  async createAndCheckoutBranch(branchName: string): Promise<void> {
+    await this.assertValidNewBranchName(branchName);
+    if (await this.localBranchExists(branchName)) {
+      throw new Error(`Branch "${branchName}" already exists. Guillermo will not reuse or overwrite it.`);
+    }
+
+    try {
+      // git switch -c starts from HEAD and refuses an existing branch, including one created concurrently.
+      await this.runGit(["switch", "--create", branchName]);
+    } catch (error) {
+      throw new Error(`Could not create and check out branch "${branchName}": ${gitErrorMessage(error)}`);
+    }
+  }
+
   async listFiles(relativePath = ".", maxEntries = 200): Promise<string[]> {
     const start = relativePath === "." ? this.root : resolveRepositoryPath(this.root, relativePath);
     const entries: string[] = [];
@@ -151,6 +184,28 @@ export class Repository {
     return stdout.split("\n").filter(Boolean);
   }
 
+  private async assertValidNewBranchName(branchName: string): Promise<void> {
+    if (!branchName || branchName.startsWith("-")) {
+      throw new Error("Branch name must be a non-empty Git branch name.");
+    }
+    try {
+      await this.runGit(["check-ref-format", "--branch", branchName]);
+    } catch {
+      throw new Error(`Invalid Git branch name: "${branchName}".`);
+    }
+  }
+
+  private async localBranchExists(branchName: string): Promise<boolean> {
+    try {
+      await this.runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`]);
+      return true;
+    } catch (error) {
+      const result = error as { code?: number };
+      if (result.code === 1) return false;
+      throw error;
+    }
+  }
+
   private async runGit(args: string[], input?: string): Promise<{ stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
       const child = spawn("git", args, { cwd: this.root, stdio: "pipe" });
@@ -168,6 +223,14 @@ export class Repository {
       child.stdin.end(input);
     });
   }
+}
+
+function gitErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    const result = error as Error & { stderr?: string };
+    return result.stderr?.trim() || error.message;
+  }
+  return String(error);
 }
 
 function compactOutput(output: string): string {

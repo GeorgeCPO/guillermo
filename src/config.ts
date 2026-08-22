@@ -10,7 +10,7 @@ export function loadConfig(overrides: Partial<Pick<GuillermoConfig, "model" | "m
     throw new Error("OPENAI_API_KEY is required. Add it to your environment before running Guillermo.");
   }
 
-  const maxSteps = overrides.maxSteps ?? Number(process.env.GUILLERMO_MAX_STEPS ?? 12);
+  const maxSteps = overrides.maxSteps ?? Number(process.env.GUILLERMO_MAX_STEPS ?? 20);
   if (!Number.isSafeInteger(maxSteps) || maxSteps < 1 || maxSteps > 50) {
     throw new Error("maxSteps must be an integer between 1 and 50.");
   }
