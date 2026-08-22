@@ -6,9 +6,10 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "test": "npm run build && node --test dist/**/*.test.js",
+    "test": "npm run clean && npm run build && node --test dist/**/*.test.js",
     "check": "tsc --noEmit"
   },
   "dependencies": {
