@@ -12,7 +12,7 @@ Given a task and a target Git repository, Guillermo asks an  model to use five n
 4. `apply_patch` — apply a validated unified diff.
 5. `run_tests` — run a package-manager test command from a small allowlist.
 
-After the run, it prints the test result, changed files, and the complete Git diff. Guillermo has no general shell tool and refuses patches outside the selected repository.
+Before the run, Guillermo requires a clean working tree and creates a new local working branch from the current commit. After the run, it prints the original and working branches, test result, changed files, and the complete Git diff. Guillermo has no general shell tool and refuses patches outside the selected repository.
 
 ## Setup
 
@@ -33,15 +33,18 @@ npm run dev -- \
   --task "Add a test for the URL parser and fix any bug the test identifies"
 ```
 
-Use `--model` to override `GUILLERMO_MODEL`, or `--max-steps` to cap tool calls:
+By default, the working branch is derived deterministically from the task (for example, `guillermo/add-url-parser-tests`). Use `--branch` to choose its name; Guillermo refuses existing or invalid names.
+
+Use `--model` to override `GUILLERMO_MODEL`, `--max-steps` to cap tool calls (the default is 20), or `--branch` to name the new branch:
 
 ```bash
-npm run dev -- --repo /path/to/repo --task "..." --max-steps 12
+npm run dev -- --repo /path/to/repo --task "..." --branch guillermo/my-change --max-steps 12
 ```
 
 ## Deliberate limits
 
-- It does not create branches, commits, pull requests, or network requests.
+- It creates and switches to one new local branch only; it does not commit, push, open pull requests, configure remotes, or make GitHub requests.
+- It refuses to run against a dirty working tree or an existing working-branch name.
 - It uses one persisted-in-process event stream only; durable run storage comes later with Jira.
 - `apply_patch` accepts only repository-relative text-file patches and blocks sensitive paths such as `.env`, `.git`, `node_modules`, and lockfiles.
 - `search_repository` stays within the selected repository, honors the same blocked paths and ignored directories, skips binary and over-100 KB files, and returns at most 100 matching lines.
