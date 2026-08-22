@@ -4,6 +4,7 @@ import { Repository, type CommandResult } from "./repository.js";
 
 export interface AgentReport {
   summary: string;
+  termination: "finished" | "stopped" | "step_limit" | "failed";
   changedFiles: string[];
   diff: string;
   testRuns: Array<{ command: string; result: CommandResult }>;
@@ -103,6 +104,7 @@ export async function runAgent(config: GuillermoConfig, repository: Repository, 
   let previousResponseId: string | undefined;
   let nextInput: OpenAI.Responses.ResponseInput = [{ role: "user", content: task }];
   let summary = "The model stopped without a final summary.";
+  let termination: AgentReport["termination"] = "step_limit";
 
   for (let step = 1; step <= config.maxSteps; step += 1) {
     const response = await client.responses.create({
@@ -121,6 +123,7 @@ export async function runAgent(config: GuillermoConfig, repository: Repository, 
     const calls = response.output.filter((item) => item.type === "function_call");
     if (calls.length === 0) {
       summary = response.output_text || summary;
+      termination = "stopped";
       break;
     }
 
@@ -133,13 +136,37 @@ export async function runAgent(config: GuillermoConfig, repository: Repository, 
       }
       outputs.push({ type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) });
       if (call.name === "finish") {
-        return { summary, changedFiles: await repository.changedFiles(), diff: await repository.diff(), testRuns, events };
+        if (!result.ok) {
+          return {
+            summary,
+            termination: "stopped",
+            changedFiles: await repository.changedFiles(),
+            diff: await repository.diff(),
+            testRuns,
+            events,
+          };
+        }
+        return {
+          summary,
+          termination: "finished",
+          changedFiles: await repository.changedFiles(),
+          diff: await repository.diff(),
+          testRuns,
+          events,
+        };
       }
     }
     nextInput = outputs;
   }
 
-  return { summary, changedFiles: await repository.changedFiles(), diff: await repository.diff(), testRuns, events };
+  return {
+    summary,
+    termination,
+    changedFiles: await repository.changedFiles(),
+    diff: await repository.diff(),
+    testRuns,
+    events,
+  };
 }
 
 async function executeTool(
