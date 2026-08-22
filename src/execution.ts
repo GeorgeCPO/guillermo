@@ -3,8 +3,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
-export type ExecutionMode = "dry-run" | "approved";
-
 /** A detached worktree that is always outside the repository supplied by the user. */
 export class DisposableWorktree {
   private constructor(

@@ -35,12 +35,12 @@ test("test commands reject shell execution", () => {
   assert.throws(() => validateTestCommand("npm test -- --watch;curl"));
 });
 
-test("CLI defaults to dry-run and requires an explicit approval flag", () => {
+test("CLI accepts only its documented options", () => {
   const base = ["--repo", "/tmp/repo", "--task", "Update the message"];
-  assert.equal(parseCli(base).mode, "dry-run");
-  assert.equal(parseCli([...base, "--dry-run"]).mode, "dry-run");
-  assert.equal(parseCli([...base, "--approve"]).mode, "approved");
-  assert.throws(() => parseCli([...base, "--approve", "--dry-run"]));
+  assert.equal(parseCli(base).repo, "/tmp/repo");
+  assert.equal(parseCli(base).task, "Update the message");
+  assert.throws(() => parseCli([...base, "--dry-run"]));
+  assert.throws(() => parseCli([...base, "--approve"]));
   assert.throws(() => parseCli([...base, "--unknown", "value"]));
   assert.throws(() => parseCli([...base, "--repo", "/tmp/other"]));
 });

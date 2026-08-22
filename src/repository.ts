@@ -2,7 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { parseTestCommand, resolveRepositoryPath, validatePatch, validateTestCommand } from "./safety.js";
+import { parseTestCommand, resolveRepositoryPath, validatePatch } from "./safety.js";
 
 const execFileAsync = promisify(execFile);
 const IGNORED_DIRECTORIES = new Set([".git", "node_modules", "dist", "coverage", ".guillermo"]);
@@ -12,7 +12,6 @@ const TEST_TIMEOUT_MS = 120_000;
 export interface CommandResult {
   exitCode: number;
   output: string;
-  skipped?: boolean;
 }
 
 export class Repository {
@@ -62,14 +61,13 @@ export class Repository {
 
   async checkPatch(patch: string): Promise<void> {
     // Validate both our conservative policy and Git's view of patch context
-    // before an approved run has any write effect.
+    // before applying a change inside the disposable worktree.
     validatePatch(patch, this.root);
     await this.runGit(["apply", "--check", "--whitespace=error-all", "-"], patch);
   }
 
   async runTests(command: string): Promise<CommandResult> {
     // execFile receives an argument vector, never a shell command string.
-    // The parser is also used for dry runs so previews and execution agree.
     const [program, ...args] = parseTestCommand(command);
     try {
       const { stdout, stderr } = await execFileAsync(program, args, {
@@ -85,11 +83,6 @@ export class Repository {
         output: compactOutput(`${result.stdout ?? ""}${result.stderr ?? ""}\n${result.message}`),
       };
     }
-  }
-
-  previewTests(command: string): CommandResult {
-    const safeCommand = validateTestCommand(command);
-    return { exitCode: 0, skipped: true, output: `Dry run: would execute ${safeCommand}` };
   }
 
   async diff(): Promise<string> {

@@ -32,11 +32,7 @@ npm run dev -- \
   --task "Add a test for the URL parser and fix any bug the test identifies"
 ```
 
-Runs default to `--dry-run`: patches are checked but not applied, and tests are validated but not executed. Add `--approve` only after reviewing the task; approved patches and tests run in the disposable worktree and are discarded after Guillermo prints the diff.
-
-```bash
-npm run dev -- --repo /path/to/repo --task "..." --approve
-```
+Guillermo patches and tests only its disposable worktree, then discards it after printing the diff. The target checkout remains unchanged.
 
 Use `--model` to override `GUILLERMO_MODEL`, or `--max-steps` to cap tool calls:
 

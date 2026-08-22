@@ -10,7 +10,7 @@ import { Repository } from "./repository.js";
 
 const execFileAsync = promisify(execFile);
 
-test("approved execution can patch and test a fixture without changing its source checkout", async (t) => {
+test("execution can patch and test a fixture without changing its source checkout", async (t) => {
   const fixtureRoot = await mkdtemp(path.join(tmpdir(), "guillermo-fixture-"));
   t.after(async () => { await rm(fixtureRoot, { recursive: true, force: true }); });
   await writeFile(path.join(fixtureRoot, "package.json"), JSON.stringify({

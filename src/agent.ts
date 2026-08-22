@@ -1,14 +1,11 @@
 import OpenAI from "openai";
 import type { GuillermoConfig } from "./config.js";
-import type { ExecutionMode } from "./execution.js";
 import { Repository, type CommandResult } from "./repository.js";
 
 export interface AgentReport {
-  mode: ExecutionMode;
   summary: string;
   changedFiles: string[];
   diff: string;
-  plannedPatches: string[];
   testRuns: Array<{ command: string; result: CommandResult }>;
   events: string[];
 }
@@ -85,11 +82,10 @@ const tools: OpenAI.Responses.FunctionTool[] = [
   },
 ];
 
-export async function runAgent(config: GuillermoConfig, repository: Repository, task: string, mode: ExecutionMode): Promise<AgentReport> {
+export async function runAgent(config: GuillermoConfig, repository: Repository, task: string): Promise<AgentReport> {
   const client = new OpenAI({ apiKey: config.apiKey });
   const events: string[] = [];
   const testRuns: AgentReport["testRuns"] = [];
-  const plannedPatches: string[] = [];
   let previousResponseId: string | undefined;
   let nextInput: OpenAI.Responses.ResponseInput = [{ role: "user", content: task }];
   let summary = "The model stopped without a final summary.";
@@ -99,7 +95,7 @@ export async function runAgent(config: GuillermoConfig, repository: Repository, 
   for (let step = 1; step <= config.maxSteps; step += 1) {
     const response = await client.responses.create({
       model: config.model,
-      instructions: instructionsFor(repository.root, mode),
+      instructions: instructionsFor(repository.root),
       input: nextInput,
       previous_response_id: previousResponseId ?? null,
       tools,
@@ -118,20 +114,20 @@ export async function runAgent(config: GuillermoConfig, repository: Repository, 
 
     const outputs: OpenAI.Responses.ResponseInputItem[] = [];
     for (const call of calls) {
-      const result = await executeTool(repository, call.name, call.arguments, testRuns, plannedPatches, mode);
+      const result = await executeTool(repository, call.name, call.arguments, testRuns);
       events.push(`${step}. ${call.name}: ${result.ok ? "ok" : "failed"}`);
       if (call.name === "finish" && result.ok) {
         summary = result.output;
       }
       outputs.push({ type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) });
       if (call.name === "finish") {
-        return { mode, summary, changedFiles: await repository.changedFiles(), diff: await repository.diff(), plannedPatches, testRuns, events };
+        return { summary, changedFiles: await repository.changedFiles(), diff: await repository.diff(), testRuns, events };
       }
     }
     nextInput = outputs;
   }
 
-  return { mode, summary, changedFiles: await repository.changedFiles(), diff: await repository.diff(), plannedPatches, testRuns, events };
+  return { summary, changedFiles: await repository.changedFiles(), diff: await repository.diff(), testRuns, events };
 }
 
 async function executeTool(
@@ -139,8 +135,6 @@ async function executeTool(
   name: string,
   rawArguments: string,
   testRuns: AgentReport["testRuns"],
-  plannedPatches: string[],
-  mode: ExecutionMode,
 ): Promise<{ ok: boolean; output: string }> {
   try {
     const args = JSON.parse(rawArguments) as Record<string, unknown>;
@@ -150,20 +144,12 @@ async function executeTool(
       case "read_file":
         return { ok: true, output: await repository.readTextFile(string(args.path), number(args.start_line), number(args.end_line)) };
       case "apply_patch": {
-        if (mode === "dry-run") {
-          const patch = string(args.patch);
-          await repository.checkPatch(patch);
-          // A dry run still exposes the exact validated proposal to the user,
-          // but deliberately leaves the isolated checkout unchanged.
-          plannedPatches.push(patch);
-          return { ok: true, output: "Dry run: patch validated but not applied." };
-        }
         const result = await repository.applyPatch(string(args.patch));
         return { ok: result.exitCode === 0, output: result.output || "Patch applied." };
       }
       case "run_tests": {
         const command = string(args.command);
-        const result = mode === "dry-run" ? repository.previewTests(command) : await repository.runTests(command);
+        const result = await repository.runTests(command);
         testRuns.push({ command, result });
         return { ok: result.exitCode === 0, output: JSON.stringify(result) };
       }
@@ -187,8 +173,8 @@ function number(value: unknown): number {
   return value;
 }
 
-function instructionsFor(repositoryRoot: string, mode: ExecutionMode): string {
+function instructionsFor(repositoryRoot: string): string {
   return `You are Guillermo, a careful local coding agent. Work only on the repository at ${repositoryRoot}.
 
-Use tools to inspect before editing. Keep changes focused on the user's task. Never claim a test passed unless run_tests returned exitCode 0 and was not skipped. If a test fails, inspect the compact output and fix only if it is relevant. Do not modify package manifests, lockfiles, secrets, CI, or Git configuration. This run is ${mode}: ${mode === "dry-run" ? "patches are validated and reported, but not applied; tests are not executed." : "patches and tests are permitted only inside a disposable worktree."} When complete, call finish with a concise summary of changes, tests, and remaining risks. The TypeScript host validates all tools; a rejected action is feedback, not permission to bypass it.`;
+Use tools to inspect before editing. Keep changes focused on the user's task. Never claim a test passed unless run_tests returned exitCode 0. If a test fails, inspect the compact output and fix only if it is relevant. Do not modify package manifests, lockfiles, secrets, CI, or Git configuration. Patches and tests are permitted only inside a disposable worktree. When complete, call finish with a concise summary of changes, tests, and remaining risks. The TypeScript host validates all tools; a rejected action is feedback, not permission to bypass it.`;
 }

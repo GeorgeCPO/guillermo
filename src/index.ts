@@ -21,7 +21,6 @@ async function main(): Promise<void> {
       loadConfig({ model: options.model, maxSteps: options.maxSteps }),
       repository,
       options.task,
-      options.mode,
     );
   } finally {
     // The report is collected by runAgent before this point; never leave a
@@ -46,15 +45,13 @@ function isMissingEnvFile(error: Error): boolean {
 function renderReport(report: Awaited<ReturnType<typeof runAgent>>): string {
   const tests = report.testRuns.length === 0
     ? "No tests were run."
-    : report.testRuns.map(({ command, result }) => `$ ${command}\n${result.skipped ? "skipped" : `exit ${result.exitCode}`}\n${result.output}`).join("\n\n");
+    : report.testRuns.map(({ command, result }) => `$ ${command}\nexit ${result.exitCode}\n${result.output}`).join("\n\n");
   return [
     "\n=== Guillermo report ===",
-    `Mode: ${report.mode}`,
     `Summary: ${report.summary}`,
     `\nTool events:\n${report.events.join("\n") || "No tools were called."}`,
     `\nChanged files:\n${report.changedFiles.join("\n") || "No changes."}`,
     `\nTests:\n${tests}`,
-    `\nPlanned diff:\n${report.plannedPatches.join("\n") || "No proposed patch."}`,
     `\nDiff:\n${report.diff}`,
   ].join("\n");
 }
