@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { Repository } from "./repository.js";
+
+const execFileAsync = promisify(execFile);
 
 async function createRepository(t: { after(callback: () => Promise<void>): void }): Promise<{ root: string; repository: Repository }> {
   const root = await mkdtemp(path.join(tmpdir(), "guillermo-search-"));
@@ -15,6 +19,23 @@ async function writeFixture(root: string, relativePath: string, contents: string
   const filePath = path.join(root, relativePath);
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, contents);
+}
+
+async function runGit(root: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, { cwd: root });
+  return stdout;
+}
+
+async function createGitRepository(t: { after(callback: () => Promise<void>): void }): Promise<{ root: string; repository: Repository }> {
+  const root = await mkdtemp(path.join(tmpdir(), "guillermo-git-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await runGit(root, ["init"]);
+  await runGit(root, ["config", "user.email", "guillermo@example.test"]);
+  await runGit(root, ["config", "user.name", "Guillermo test"]);
+  await writeFixture(root, "README.md", "initial\n");
+  await runGit(root, ["add", "README.md"]);
+  await runGit(root, ["commit", "-m", "Initial commit"]);
+  return { root, repository: new Repository(root) };
 }
 
 test("search_repository returns deterministic repository-relative matching lines", async (t) => {
@@ -70,4 +91,42 @@ test("search_repository limits matches and skips ignored, binary, and oversized 
     { path: "a.txt", line: 1, text: "needle one" },
     { path: "a.txt", line: 2, text: "needle two" },
   ]);
+});
+
+test("a clean repository gets a new checked-out working branch", async (t) => {
+  const { root, repository } = await createGitRepository(t);
+  const originalBranch = await repository.currentBranch();
+  const originalCommit = (await runGit(root, ["rev-parse", "HEAD"])).trim();
+
+  await repository.assertCleanWorkingTree();
+  await repository.createAndCheckoutBranch("guillermo/add-parser-tests");
+
+  assert.equal(await repository.currentBranch(), "guillermo/add-parser-tests");
+  assert.notEqual(await repository.currentBranch(), originalBranch);
+  assert.equal((await runGit(root, ["rev-parse", "HEAD"])).trim(), originalCommit);
+});
+
+test("a dirty repository is rejected before a working branch is created", async (t) => {
+  const { root, repository } = await createGitRepository(t);
+  const originalBranch = await repository.currentBranch();
+  await writeFixture(root, "untracked.txt", "dirty\n");
+
+  await assert.rejects(repository.assertCleanWorkingTree(), /dirty working tree/);
+  assert.equal(await repository.currentBranch(), originalBranch);
+  assert.equal((await runGit(root, ["branch", "--list", "guillermo/after-dirty-check"])).trim(), "");
+});
+
+test("an existing branch is refused without changing the current branch", async (t) => {
+  const { root, repository } = await createGitRepository(t);
+  const originalBranch = await repository.currentBranch();
+  await runGit(root, ["branch", "guillermo/existing"]);
+
+  await assert.rejects(repository.createAndCheckoutBranch("guillermo/existing"), /already exists/);
+  assert.equal(await repository.currentBranch(), originalBranch);
+});
+
+test("invalid branch names are rejected before Git can create a branch", async (t) => {
+  const { repository } = await createGitRepository(t);
+
+  await assert.rejects(repository.createAndCheckoutBranch("guillermo/has space"), /Invalid Git branch name/);
 });
