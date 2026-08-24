@@ -48,9 +48,10 @@ test("the exact comment command creates a bounded task from trusted issue fields
   assert.equal(result.kind, "accepted");
   if (result.kind !== "accepted") return;
   assert.deepEqual(result.job, {
-    eventId: "APP-42:comment:9001",
-    issueKey: "APP-42",
-    projectKey: "APP",
+    source: {
+      eventId: "APP-42:comment:9001",
+      metadata: { issueKey: "APP-42", projectKey: "APP" },
+    },
     repositoryPath: "/srv/repos/app",
     baseBranch: "main",
     branch: "guillermo/app-42-comment-9001",

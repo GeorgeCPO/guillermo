@@ -1,4 +1,5 @@
 import { deriveDefaultBranchName } from "../../application/branch.js";
+import type { CodingJob } from "../../application/coding-job.js";
 import type { JiraProjectMap } from "./jira-config.js";
 import { JiraEnvelopeSchema, JiraPayloadObjectSchema, TrustedIssueFieldsSchema } from "./jira-schemas.js";
 import { jiraText } from "./jira-text.js";
@@ -6,19 +7,8 @@ import { jiraText } from "./jira-text.js";
 export { parseProjectMap } from "./jira-config.js";
 export type { JiraProjectConfig, JiraProjectMap } from "./jira-config.js";
 
-export interface JiraJob {
-  eventId: string;
-  issueKey: string;
-  projectKey: string;
-  repositoryPath: string;
-  baseBranch: string;
-  branch: string;
-  task: string;
-  prTitle?: string;
-}
-
 export type JiraParseResult =
-  | { kind: "accepted"; job: JiraJob }
+  | { kind: "accepted"; job: CodingJob }
   | { kind: "ignored"; reason: string }
   | { kind: "invalid"; reason: string };
 
@@ -67,9 +57,10 @@ export function parseJiraWebhook(payload: unknown, projects: JiraProjectMap): Ji
   return {
     kind: "accepted",
     job: {
-      eventId: `${issueKey}:comment:${comment.id}`,
-      issueKey,
-      projectKey,
+      source: {
+        eventId: `${issueKey}:comment:${comment.id}`,
+        metadata: { issueKey, projectKey },
+      },
       repositoryPath: project.repositoryPath,
       baseBranch: project.baseBranch,
       branch: deriveDefaultBranchName(`${issueKey} comment ${comment.id}`),

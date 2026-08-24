@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { JiraJob } from "../../src/integrations/jira/jira.js";
+import type { CodingJob } from "../../src/application/coding-job.js";
 import { InProcessJobQueue, type JobQueueLogRecord } from "../../src/application/job-queue.js";
 
 test("duplicate active event IDs are rejected and become eligible after completion", async () => {
@@ -28,8 +28,8 @@ test("separate jobs for the same repository execute serially", async () => {
   const starts: string[] = [];
   const logs: JobQueueLogRecord[] = [];
   const queue = new InProcessJobQueue(async (candidate) => {
-    starts.push(candidate.eventId);
-    if (candidate.eventId === "first") await firstRun.promise;
+    starts.push(candidate.source.eventId);
+    if (candidate.source.eventId === "first") await firstRun.promise;
   }, (record) => logs.push(record));
 
   assert.equal(await queue.enqueue(job("first")), "accepted");
@@ -47,8 +47,8 @@ test("jobs for different repositories can start concurrently", async () => {
   const starts: string[] = [];
   const logs: JobQueueLogRecord[] = [];
   const queue = new InProcessJobQueue(async (candidate) => {
-    starts.push(candidate.eventId);
-    await releases.get(candidate.eventId)?.promise;
+    starts.push(candidate.source.eventId);
+    await releases.get(candidate.source.eventId)?.promise;
   }, (record) => logs.push(record));
 
   assert.equal(await queue.enqueue(job("first", "/repo/one")), "accepted");
@@ -61,12 +61,28 @@ test("jobs for different repositories can start concurrently", async () => {
   await eventually(() => logs.filter(({ event }) => event === "completed").length === 2);
 });
 
+test("queue behavior depends on application source metadata rather than Jira job fields", async () => {
+  const logs: JobQueueLogRecord[] = [];
+  const queue = new InProcessJobQueue(async () => ({ outcome: "finished" }), (record) => logs.push(record));
+  const codingJob: CodingJob = {
+    source: { eventId: "request-1", metadata: { requestId: "external-42" } },
+    repositoryPath: "/repo",
+    baseBranch: "main",
+    branch: "guillermo/request-1",
+    task: "Implement a change",
+  };
+
+  assert.equal(await queue.enqueue(codingJob), "accepted");
+  await eventually(() => completed(logs, "request-1") === 1);
+  assert.deepEqual(logs[0], { event: "started", eventId: "request-1", requestId: "external-42" });
+});
+
 test("a failed job is logged and does not block the next job for its repository", async () => {
   const starts: string[] = [];
   const logs: JobQueueLogRecord[] = [];
   const queue = new InProcessJobQueue(async (candidate) => {
-    starts.push(candidate.eventId);
-    if (candidate.eventId === "first") throw new TypeError("sensitive task details");
+    starts.push(candidate.source.eventId);
+    if (candidate.source.eventId === "first") throw new TypeError("sensitive task details");
     return { outcome: "created" };
   }, (record) => logs.push(record));
 
@@ -85,11 +101,9 @@ test("a failed job is logged and does not block the next job for its repository"
   await eventually(() => logs.filter(({ event, eventId }) => event === "failed" && eventId === "first").length === 2);
 });
 
-function job(eventId: string, repositoryPath = "/repo"): JiraJob {
+function job(eventId: string, repositoryPath = "/repo"): CodingJob {
   return {
-    eventId,
-    issueKey: "APP-1",
-    projectKey: "APP",
+    source: { eventId, metadata: { issueKey: "APP-1", projectKey: "APP" } },
     repositoryPath,
     baseBranch: "main",
     branch: `guillermo/${eventId}`,
