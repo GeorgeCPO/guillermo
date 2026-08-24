@@ -1,12 +1,13 @@
 import process from "node:process";
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "../../config/config.js";
+import { loadEnvironmentFile } from "../../config/environment.js";
 import { parseProjectMap } from "../../integrations/jira/jira.js";
 import { InProcessJobQueue } from "../../application/job-queue.js";
 import { runGuillermo } from "../../application/run.js";
 import { createWebhookApp } from "./server.js";
 
-loadEnvironment();
+loadEnvironmentFile();
 const config = loadConfig();
 const secret = requiredEnvironment("GUILLERMO_JIRA_WEBHOOK_SECRET");
 const projects = parseProjectMap(requiredEnvironment("GUILLERMO_JIRA_PROJECTS"));
@@ -33,14 +34,6 @@ try {
 } catch (error) {
   app.log.error({ err: error }, "Failed to start webhook server");
   process.exitCode = 1;
-}
-
-function loadEnvironment(): void {
-  try {
-    process.loadEnvFile();
-  } catch (error: unknown) {
-    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
-  }
 }
 
 function requiredEnvironment(name: string): string {

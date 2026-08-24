@@ -21,10 +21,41 @@ export interface GuillermoRunResult {
   pullRequest: PullRequestResult;
 }
 
-export async function runGuillermo(config: GuillermoConfig, options: RunOptions): Promise<GuillermoRunResult> {
-  await access(options.repo);
-  const root = await realpath(options.repo);
-  const repository = new Repository(root);
+export interface RunRepository {
+  assertGitRepository(): Promise<void>;
+  assertCleanWorkingTree(): Promise<void>;
+  currentBranch(): Promise<string>;
+  createAndCheckoutBranch(branchName: string, startPoint?: string): Promise<void>;
+  headCommit(): Promise<string>;
+  changedFiles(): Promise<string[]>;
+  diff(): Promise<string>;
+}
+
+export interface RunGuillermoDependencies {
+  access(path: string): Promise<void>;
+  realpath(path: string): Promise<string>;
+  createRepository(root: string): RunRepository;
+  runAgent(config: GuillermoConfig, repository: RunRepository, task: string): Promise<AgentReport>;
+  createPullRequest(report: AgentReport, options: Parameters<typeof createPullRequest>[1]): Promise<PullRequestResult>;
+}
+
+const defaultDependencies: RunGuillermoDependencies = {
+  access,
+  realpath,
+  createRepository: (root) => new Repository(root),
+  runAgent: (config, repository, task) => runAgent(config, repository as Repository, task),
+  createPullRequest,
+};
+
+export async function runGuillermo(
+  config: GuillermoConfig,
+  options: RunOptions,
+  overrides: Partial<RunGuillermoDependencies> = {},
+): Promise<GuillermoRunResult> {
+  const dependencies = { ...defaultDependencies, ...overrides };
+  await dependencies.access(options.repo);
+  const root = await dependencies.realpath(options.repo);
+  const repository = dependencies.createRepository(root);
   await repository.assertGitRepository();
   await repository.assertCleanWorkingTree();
 
@@ -35,11 +66,11 @@ export async function runGuillermo(config: GuillermoConfig, options: RunOptions)
 
   let report: AgentReport;
   try {
-    report = await runAgent(config, repository, options.task);
+    report = await dependencies.runAgent(config, repository, options.task);
   } catch (error) {
     report = await failedAgentReport(repository, error);
   }
-  const pullRequest = await createPullRequest(report, {
+  const pullRequest = await dependencies.createPullRequest(report, {
     root,
     task: options.task,
     branch: createdBranch,
@@ -50,7 +81,7 @@ export async function runGuillermo(config: GuillermoConfig, options: RunOptions)
   return { report, originalBranch, createdBranch, pullRequest };
 }
 
-async function failedAgentReport(repository: Repository, error: unknown): Promise<AgentReport> {
+async function failedAgentReport(repository: Pick<RunRepository, "changedFiles" | "diff">, error: unknown): Promise<AgentReport> {
   const failure = error instanceof Error ? error.message : String(error);
   let changedFiles: string[] = [];
   let diff = "Could not read the working-tree diff after the agent failed.";
