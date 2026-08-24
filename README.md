@@ -45,7 +45,7 @@ GUILLERMO_WEBHOOK_HOST=127.0.0.1
 GUILLERMO_WEBHOOK_PORT=3000
 ```
 
-Start the local listener after completing the regular setup:
+Start the local Fastify listener after completing the regular setup:
 
 ```bash
 npm run dev:webhooks

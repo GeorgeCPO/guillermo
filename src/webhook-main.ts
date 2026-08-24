@@ -1,8 +1,9 @@
 import process from "node:process";
+import type { FastifyInstance } from "fastify";
 import { loadConfig } from "./config.js";
 import { parseProjectMap } from "./jira.js";
 import { runGuillermo } from "./run.js";
-import { createWebhookServer, InProcessJobQueue } from "./webhook.js";
+import { createWebhookApp, InProcessJobQueue } from "./webhook.js";
 
 loadEnvironment();
 const config = loadConfig();
@@ -11,6 +12,7 @@ const projects = parseProjectMap(requiredEnvironment("GUILLERMO_JIRA_PROJECTS"))
 const port = parsePort(process.env.GUILLERMO_WEBHOOK_PORT ?? "3000");
 const host = process.env.GUILLERMO_WEBHOOK_HOST ?? "127.0.0.1";
 
+let app: FastifyInstance;
 const queue = new InProcessJobQueue(async (job) => {
   const result = await runGuillermo(config, {
     repo: job.repositoryPath,
@@ -21,11 +23,16 @@ const queue = new InProcessJobQueue(async (job) => {
     prTitle: job.prTitle,
   });
   return { outcome: result.pullRequest.status };
-});
-const server = createWebhookServer({ secret, projects, queue });
-server.listen(port, host, () => {
-  console.log(JSON.stringify({ event: "listening", host, port }));
-});
+}, (record) => app.log.info(record));
+
+app = createWebhookApp({ secret, projects, queue });
+try {
+  await app.listen({ port, host });
+  app.log.info({ event: "listening", host, port });
+} catch (error) {
+  app.log.error({ err: error }, "Failed to start webhook server");
+  process.exitCode = 1;
+}
 
 function loadEnvironment(): void {
   try {

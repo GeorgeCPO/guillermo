@@ -1,9 +1,10 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import Fastify, { LogController, type FastifyInstance, type FastifyServerOptions } from "fastify";
 import type { JiraJob, JiraProjectMap } from "./jira.js";
 import { parseJiraWebhook } from "./jira.js";
 
 const MAX_BODY_BYTES = 256_000;
+const JIRA_WEBHOOK_PATH = "/webhooks/jira";
 
 export interface LogRecord {
   event: "accepted" | "rejected" | "duplicate" | "started" | "completed" | "failed";
@@ -22,18 +23,19 @@ export interface JobQueue {
   enqueue(job: JiraJob): boolean;
 }
 
-export interface WebhookServerOptions {
+export interface WebhookAppOptions {
   secret: string;
   projects: JiraProjectMap;
   queue: JobQueue;
   logger?: Logger;
+  fastifyLogger?: FastifyServerOptions["logger"];
 }
 
 export class InProcessJobQueue implements JobQueue {
   private readonly activeEvents = new Set<string>();
   private readonly repositoryTails = new Map<string, Promise<void>>();
 
-  public constructor(private readonly run: JobRunner, private readonly logger: Logger = structuredLogger) {}
+  public constructor(private readonly run: JobRunner, private readonly logger: Logger) {}
 
   enqueue(job: JiraJob): boolean {
     if (this.activeEvents.has(job.eventId)) return false;
@@ -57,16 +59,70 @@ export class InProcessJobQueue implements JobQueue {
   }
 }
 
-export function createWebhookServer(options: WebhookServerOptions): Server {
+export function createWebhookApp(options: WebhookAppOptions): FastifyInstance {
   if (Buffer.byteLength(options.secret) < 16) throw new Error("GUILLERMO_JIRA_WEBHOOK_SECRET must be at least 16 bytes.");
-  const logger = options.logger ?? structuredLogger;
-  return createServer((request, response) => {
-    void handleRequest(request, response, options, logger).catch((error: unknown) => {
-      logger({ event: "rejected", reason: error instanceof HttpError ? error.reason : "request_error" });
-      if (!response.headersSent) sendJson(response, error instanceof HttpError ? error.status : 500, { status: "rejected" });
-      else response.end();
-    });
+
+  const app = Fastify({
+    bodyLimit: MAX_BODY_BYTES,
+    logController: new LogController({ disableRequestLogging: true }),
+    logger: options.fastifyLogger ?? {
+      level: "info",
+      redact: {
+        paths: [
+          "req.headers.x-guillermo-webhook-secret",
+          "request.headers.x-guillermo-webhook-secret",
+          "req.body",
+          "request.body",
+          "body",
+        ],
+        remove: true,
+      },
+    },
   });
+  const logger = options.logger ?? ((record: LogRecord) => app.log.info(record));
+
+  app.setErrorHandler((error, _request, reply) => {
+    const rejection = rejectionFor(error);
+    logger({ event: "rejected", reason: rejection.reason });
+    return reply.status(rejection.status).send({ status: "rejected" });
+  });
+
+  app.setNotFoundHandler((request, reply) => {
+    const pathname = new URL(request.url, "http://localhost").pathname;
+    if (pathname === JIRA_WEBHOOK_PATH) {
+      logger({ event: "rejected", reason: "method_not_allowed" });
+      return reply.status(405).send({ status: "rejected" });
+    }
+    return reply.status(404).send({ status: "not_found" });
+  });
+
+  app.post(JIRA_WEBHOOK_PATH, {
+    onRequest: async (request) => {
+      if (!authenticateWebhook(request.headers["x-guillermo-webhook-secret"], options.secret)) {
+        throw new HttpError(401, "authentication_failed");
+      }
+      if (!request.headers["content-type"]?.toLowerCase().startsWith("application/json")) {
+        throw new HttpError(415, "content_type_not_json");
+      }
+    },
+  }, async (request, reply) => {
+    const parsed = parseJiraWebhook(request.body, options.projects);
+    if (parsed.kind === "invalid") throw new HttpError(400, parsed.reason);
+    if (parsed.kind === "ignored") {
+      logger({ event: "rejected", reason: parsed.reason });
+      return reply.status(200).send({ status: "ignored" });
+    }
+
+    const queued = options.queue.enqueue(parsed.job);
+    if (!queued) {
+      logger(metadata("duplicate", parsed.job));
+      return reply.status(202).send({ status: "duplicate" });
+    }
+    logger(metadata("accepted", parsed.job));
+    return reply.status(202).send({ status: "accepted" });
+  });
+
+  return app;
 }
 
 export function authenticateWebhook(header: string | string[] | undefined, secret: string): boolean {
@@ -76,72 +132,21 @@ export function authenticateWebhook(header: string | string[] | undefined, secre
   return timingSafeEqual(suppliedDigest, expectedDigest);
 }
 
-async function handleRequest(
-  request: IncomingMessage,
-  response: ServerResponse,
-  options: WebhookServerOptions,
-  logger: Logger,
-): Promise<void> {
-  const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
-  if (pathname !== "/webhooks/jira") {
-    sendJson(response, 404, { status: "not_found" });
-    return;
-  }
-  if (request.method !== "POST") throw new HttpError(405, "method_not_allowed");
-  if (!authenticateWebhook(request.headers["x-guillermo-webhook-secret"], options.secret)) {
-    throw new HttpError(401, "authentication_failed");
-  }
-  if (!request.headers["content-type"]?.toLowerCase().startsWith("application/json")) {
-    throw new HttpError(415, "content_type_not_json");
-  }
-
-  const payload = await readJsonBody(request);
-  const parsed = parseJiraWebhook(payload, options.projects);
-  if (parsed.kind === "invalid") throw new HttpError(400, parsed.reason);
-  if (parsed.kind === "ignored") {
-    logger({ event: "rejected", reason: parsed.reason });
-    sendJson(response, 200, { status: "ignored" });
-    return;
-  }
-
-  const queued = options.queue.enqueue(parsed.job);
-  if (!queued) {
-    logger(metadata("duplicate", parsed.job));
-    sendJson(response, 202, { status: "duplicate" });
-    return;
-  }
-  logger(metadata("accepted", parsed.job));
-  sendJson(response, 202, { status: "accepted" });
-}
-
-async function readJsonBody(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let length = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    length += buffer.length;
-    if (length > MAX_BODY_BYTES) throw new HttpError(413, "payload_too_large");
-    chunks.push(buffer);
-  }
-  if (length === 0) throw new HttpError(400, "empty_payload");
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new HttpError(400, "invalid_json");
-  }
+function rejectionFor(error: unknown): { status: number; reason: string } {
+  if (error instanceof HttpError) return { status: error.status, reason: error.reason };
+  const code = error instanceof Error && "code" in error ? error.code : undefined;
+  if (code === "FST_ERR_CTP_BODY_TOO_LARGE") return { status: 413, reason: "payload_too_large" };
+  if (code === "FST_ERR_CTP_EMPTY_JSON_BODY") return { status: 400, reason: "empty_payload" };
+  if (code === "FST_ERR_CTP_INVALID_JSON_BODY") return { status: 400, reason: "invalid_json" };
+  if (code === "FST_ERR_CTP_INVALID_MEDIA_TYPE") return { status: 415, reason: "content_type_not_json" };
+  const statusCode = error instanceof Error && "statusCode" in error && typeof error.statusCode === "number"
+    ? error.statusCode
+    : 500;
+  return { status: statusCode, reason: "request_error" };
 }
 
 function metadata(event: LogRecord["event"], job: JiraJob): LogRecord {
   return { event, eventId: job.eventId, issueKey: job.issueKey, projectKey: job.projectKey };
-}
-
-function sendJson(response: ServerResponse, status: number, body: Record<string, string>): void {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(body));
-}
-
-function structuredLogger(record: LogRecord): void {
-  console.log(JSON.stringify({ timestamp: new Date().toISOString(), ...record }));
 }
 
 class HttpError extends Error {
@@ -149,4 +154,3 @@ class HttpError extends Error {
     super(reason);
   }
 }
-
