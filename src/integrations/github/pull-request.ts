@@ -6,6 +6,12 @@ import {
   type ProcessRunner,
 } from "../../infrastructure/process/process-runner.js";
 
+const GENERATED_TITLE_PREFIX = "Guillermo: ";
+const GENERATED_PR_BODY_PREFIX = "Created by Guillermo for: ";
+const MAX_COMMIT_SUBJECT_LENGTH = 72;
+const MAX_PR_TITLE_LENGTH = 120;
+const MAX_PR_BODY_TASK_LENGTH = 500;
+
 export interface PullRequestOptions {
   root: string;
   task: string;
@@ -47,11 +53,11 @@ export function evaluatePullRequestEligibility(report: AgentReport): PullRequest
 }
 
 export function deriveCommitMessage(task: string): string {
-  return `Guillermo: ${compactTask(task, 72 - "Guillermo: ".length)}`;
+  return `${GENERATED_TITLE_PREFIX}${compactTask(task, MAX_COMMIT_SUBJECT_LENGTH - GENERATED_TITLE_PREFIX.length)}`;
 }
 
 export function derivePullRequestTitle(task: string): string {
-  return `Guillermo: ${compactTask(task, 120 - "Guillermo: ".length)}`;
+  return `${GENERATED_TITLE_PREFIX}${compactTask(task, MAX_PR_TITLE_LENGTH - GENERATED_TITLE_PREFIX.length)}`;
 }
 
 /**
@@ -104,7 +110,7 @@ export async function createPullRequest(
       "--base", options.baseBranch,
       "--head", options.branch,
       "--title", title,
-      "--body", `Created by Guillermo for: ${compactTask(options.task, 500)}`,
+      "--body", `${GENERATED_PR_BODY_PREFIX}${compactTask(options.task, MAX_PR_BODY_TASK_LENGTH)}`,
     ]);
     const pullRequestUrl = prOutput.stdout.trim();
     if (!pullRequestUrl) throw new Error("gh pr create completed without printing a pull request URL.");

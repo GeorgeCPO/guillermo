@@ -2,6 +2,9 @@ import path from "node:path";
 import { z } from "zod";
 import { ProjectKeySchema } from "./jira-schemas.js";
 
+const MAX_BRANCH_NAME_LENGTH = 200;
+const MAX_PR_TITLE_FORMAT_LENGTH = 200;
+
 const JiraProjectMapSchema = z.record(z.string(), z.unknown());
 const JiraProjectCandidateSchema = z.looseObject({
   repositoryPath: z.unknown(),
@@ -71,12 +74,12 @@ function parseProjectConfig(projectKey: string, value: unknown): JiraProjectConf
 }
 
 function isSafeBranch(value: string): boolean {
-  return value.length > 0 && value.length <= 200 && !value.startsWith("-") && !value.startsWith(".") && !value.endsWith(".")
+  return value.length > 0 && value.length <= MAX_BRANCH_NAME_LENGTH && !value.startsWith("-") && !value.startsWith(".") && !value.endsWith(".")
     && !value.includes("..") && !value.includes("@{") && !/[\s~^:?*[\\]/.test(value) && !value.endsWith(".lock");
 }
 
 function isSafeTitleFormat(value: string): boolean {
   const literalText = value.replaceAll("{issueKey}", "").replaceAll("{summary}", "");
-  return value.trim().length > 0 && value.length <= 200
+  return value.trim().length > 0 && value.length <= MAX_PR_TITLE_FORMAT_LENGTH
     && !literalText.includes("{") && !literalText.includes("}");
 }
