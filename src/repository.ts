@@ -1,10 +1,13 @@
-import { execFile, spawn } from "node:child_process";
-import { promisify, TextDecoder } from "node:util";
+import { TextDecoder } from "node:util";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
+import { ProcessGitClient, type GitClient } from "./git-client.js";
+import {
+  defaultProcessRunner,
+  type ProcessRunner,
+} from "./process-runner.js";
 import { resolveRepositoryPath, validatePatch, validateTestCommand } from "./safety.js";
 
-const execFileAsync = promisify(execFile);
 const IGNORED_DIRECTORIES = new Set([".git", "node_modules", "dist", "coverage", ".guillermo"]);
 const MAX_FILE_BYTES = 100_000;
 
@@ -20,34 +23,29 @@ export interface SearchResult {
 }
 
 export class Repository {
-  public constructor(public readonly root: string) {}
+  public constructor(
+    public readonly root: string,
+    private readonly runner: ProcessRunner = defaultProcessRunner,
+    private readonly git: GitClient = new ProcessGitClient(runner),
+  ) {}
 
   async assertGitRepository(): Promise<void> {
-    await this.runGit(["rev-parse", "--is-inside-work-tree"]);
+    await this.git.assertRepository(this.root);
   }
 
   async assertCleanWorkingTree(): Promise<void> {
-    const { stdout } = await this.runGit(["status", "--porcelain=v1", "--untracked-files=all"]);
-    if (stdout.trim()) {
+    if ((await this.git.workingTreeStatus(this.root)).trim()) {
       throw new Error("Target repository has a dirty working tree. Commit, stash, or discard its changes before running Guillermo.");
     }
   }
 
   async currentBranch(): Promise<string> {
-    try {
-      const { stdout } = await this.runGit(["symbolic-ref", "--quiet", "--short", "HEAD"]);
-      return stdout.trim();
-    } catch (error) {
-      const result = error as { code?: number };
-      if (result.code !== 1) throw error;
-      const { stdout } = await this.runGit(["rev-parse", "--short", "HEAD"]);
-      return `detached HEAD at ${stdout.trim()}`;
-    }
+    const branch = await this.git.symbolicBranch(this.root);
+    return branch ?? `detached HEAD at ${await this.git.shortHead(this.root)}`;
   }
 
   async headCommit(): Promise<string> {
-    const { stdout } = await this.runGit(["rev-parse", "HEAD"]);
-    return stdout.trim();
+    return this.git.head(this.root);
   }
 
   async createAndCheckoutBranch(branchName: string, startPoint?: string): Promise<void> {
@@ -65,7 +63,7 @@ export class Repository {
     try {
       // An explicit start point prevents unattended webhook runs from inheriting
       // the previously created branch. Git still refuses a branch created concurrently.
-      await this.runGit(["switch", "--create", branchName, ...(startPoint ? [startPoint] : [])]);
+      await this.git.createAndSwitchBranch(this.root, branchName, startPoint);
     } catch (error) {
       throw new Error(`Could not create and check out branch "${branchName}": ${gitErrorMessage(error)}`);
     }
@@ -166,34 +164,28 @@ export class Repository {
 
   async applyPatch(patch: string): Promise<CommandResult> {
     validatePatch(patch, this.root);
-    await this.runGit(["apply", "--check", "--whitespace=error-all", "-"], patch);
-    const { stdout, stderr } = await this.runGit(["apply", "--whitespace=error-all", "-"], patch);
+    await this.git.checkPatch(this.root, patch);
+    const { stdout, stderr } = await this.git.applyPatch(this.root, patch);
     return { exitCode: 0, output: compactOutput(`${stdout}${stderr}`) };
   }
 
   async runTests(command: string): Promise<CommandResult> {
     const safeCommand = validateTestCommand(command);
     const [program, ...args] = safeCommand.split(/\s+/);
-    try {
-      const { stdout, stderr } = await execFileAsync(program, args, { cwd: this.root, maxBuffer: 500_000 });
-      return { exitCode: 0, output: compactOutput(`${stdout}${stderr}`) };
-    } catch (error) {
-      const result = error as { code?: number; stdout?: string; stderr?: string; message: string };
-      return {
-        exitCode: typeof result.code === "number" ? result.code : 1,
-        output: compactOutput(`${result.stdout ?? ""}${result.stderr ?? ""}\n${result.message}`),
-      };
-    }
+    const result = await this.runner.run({ executable: program, args, cwd: this.root });
+    const errorMessage = result.error?.message ? `\n${result.error.message}` : "";
+    return {
+      exitCode: result.exitCode ?? 1,
+      output: compactOutput(`${result.stdout}${result.stderr}${errorMessage}`),
+    };
   }
 
   async diff(): Promise<string> {
-    const { stdout } = await this.runGit(["diff", "--no-ext-diff", "--binary"]);
-    return stdout || "No uncommitted changes.";
+    return await this.git.diff(this.root) || "No uncommitted changes.";
   }
 
   async changedFiles(): Promise<string[]> {
-    const { stdout } = await this.runGit(["status", "--short"]);
-    return stdout.split("\n").filter(Boolean);
+    return this.git.changedFiles(this.root);
   }
 
   private async assertValidNewBranchName(branchName: string): Promise<void> {
@@ -207,48 +199,18 @@ export class Repository {
     if (!branchName || branchName.startsWith("-")) {
       throw new Error(`${label} must be a non-empty Git branch name.`);
     }
-    try {
-      await this.runGit(["check-ref-format", "--branch", branchName]);
-    } catch {
+    if (!await this.git.isValidBranchName(this.root, branchName)) {
       throw new Error(`Invalid ${label}: "${branchName}".`);
     }
   }
 
   private async localBranchExists(branchName: string): Promise<boolean> {
-    try {
-      await this.runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`]);
-      return true;
-    } catch (error) {
-      const result = error as { code?: number };
-      if (result.code === 1) return false;
-      throw error;
-    }
-  }
-
-  private async runGit(args: string[], input?: string): Promise<{ stdout: string; stderr: string }> {
-    return new Promise((resolve, reject) => {
-      const child = spawn("git", args, { cwd: this.root, stdio: "pipe" });
-      let stdout = "";
-      let stderr = "";
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (chunk: string) => { stdout += chunk; });
-      child.stderr.on("data", (chunk: string) => { stderr += chunk; });
-      child.on("error", reject);
-      child.on("close", (code) => {
-        if (code === 0) resolve({ stdout, stderr });
-        else reject(Object.assign(new Error(`git ${args[0]} exited with ${code}`), { code, stdout, stderr }));
-      });
-      child.stdin.end(input);
-    });
+    return this.git.localBranchExists(this.root, branchName);
   }
 }
 
 function gitErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    const result = error as Error & { stderr?: string };
-    return result.stderr?.trim() || error.message;
-  }
+  if (error instanceof Error) return error.message;
   return String(error);
 }
 

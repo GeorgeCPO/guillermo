@@ -7,8 +7,8 @@ import {
   derivePullRequestTitle,
   evaluatePullRequestEligibility,
   parseChangedPaths,
-  type ProcessRunner,
 } from "./pull-request.js";
+import type { ProcessRunner } from "./process-runner.js";
 
 function report(overrides: Partial<AgentReport> = {}): AgentReport {
   return {
@@ -50,10 +50,10 @@ test("ineligible reports do not execute Git or GitHub commands", async () => {
     report({ testRuns: [] }),
   ]) {
     const calls: string[] = [];
-    const runner: ProcessRunner = async (program, args) => {
-      calls.push(`${program} ${args.join(" ")}`);
-      return { stdout: "", stderr: "" };
-    };
+    const runner: ProcessRunner = { run: async ({ executable, args }) => {
+      calls.push(`${executable} ${args.join(" ")}`);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    } };
     const result = await createPullRequest(ineligibleReport, {
       root: "/repo",
       task: "Add tests",
@@ -70,20 +70,20 @@ test("ineligible reports do not execute Git or GitHub commands", async () => {
 test("pull-request publishing constructs safe Git and gh argument arrays", async () => {
   const calls: Array<{ program: string; args: string[]; cwd: string }> = [];
   let revParseCalls = 0;
-  const runner: ProcessRunner = async (program, args, cwd) => {
-    calls.push({ program, args, cwd });
+  const runner: ProcessRunner = { run: async ({ executable: program, args, cwd }) => {
+    calls.push({ program, args: [...args], cwd });
     if (program === "git" && args[0] === "ls-remote") {
-      throw Object.assign(new Error("branch absent"), { code: 2 });
+      return { exitCode: 2, stdout: "", stderr: "branch absent" };
     }
-    if (program === "git" && args[0] === "branch") return { stdout: "guillermo/add-parser-tests\n", stderr: "" };
-    if (program === "git" && args[0] === "status") return { stdout: " M src/example.ts\0?? test/example.test.ts\0", stderr: "" };
+    if (program === "git" && args[0] === "branch") return { exitCode: 0, stdout: "guillermo/add-parser-tests\n", stderr: "" };
+    if (program === "git" && args[0] === "status") return { exitCode: 0, stdout: " M src/example.ts\0?? test/example.test.ts\0", stderr: "" };
     if (program === "git" && args[0] === "rev-parse") {
       revParseCalls += 1;
-      return { stdout: revParseCalls === 1 ? "base123\n" : "abc123\n", stderr: "" };
+      return { exitCode: 0, stdout: revParseCalls === 1 ? "base123\n" : "abc123\n", stderr: "" };
     }
-    if (program === "gh" && args[0] === "pr") return { stdout: "https://github.com/acme/project/pull/42\n", stderr: "" };
-    return { stdout: "", stderr: "" };
-  };
+    if (program === "gh" && args[0] === "pr") return { exitCode: 0, stdout: "https://github.com/acme/project/pull/42\n", stderr: "" };
+    return { exitCode: 0, stdout: "", stderr: "" };
+  } };
 
   const result = await createPullRequest(report(), {
     root: "/repo",
@@ -125,10 +125,10 @@ test("pull-request publishing constructs safe Git and gh argument arrays", async
 
 test("an existing remote branch is refused before staging, committing, or pushing", async () => {
   const calls: string[] = [];
-  const runner: ProcessRunner = async (program, args) => {
-    calls.push(`${program} ${args.join(" ")}`);
-    return { stdout: "refs/heads/guillermo/add-tests\n", stderr: "" };
-  };
+  const runner: ProcessRunner = { run: async ({ executable, args }) => {
+    calls.push(`${executable} ${args.join(" ")}`);
+    return { exitCode: 0, stdout: "refs/heads/guillermo/add-tests\n", stderr: "" };
+  } };
 
   const result = await createPullRequest(report(), {
     root: "/repo",
@@ -150,15 +150,15 @@ test("an existing remote branch is refused before staging, committing, or pushin
 
 test("a prior commit during the agent run is refused to preserve a single Guillermo commit", async () => {
   const calls: string[] = [];
-  const runner: ProcessRunner = async (program, args) => {
+  const runner: ProcessRunner = { run: async ({ executable: program, args }) => {
     calls.push(`${program} ${args.join(" ")}`);
     if (program === "git" && args[0] === "ls-remote") {
-      throw Object.assign(new Error("branch absent"), { code: 2 });
+      return { exitCode: 2, stdout: "", stderr: "branch absent" };
     }
-    if (program === "git" && args[0] === "branch") return { stdout: "guillermo/add-tests\n", stderr: "" };
-    if (program === "git" && args[0] === "rev-parse") return { stdout: "different-commit\n", stderr: "" };
-    return { stdout: "", stderr: "" };
-  };
+    if (program === "git" && args[0] === "branch") return { exitCode: 0, stdout: "guillermo/add-tests\n", stderr: "" };
+    if (program === "git" && args[0] === "rev-parse") return { exitCode: 0, stdout: "different-commit\n", stderr: "" };
+    return { exitCode: 0, stdout: "", stderr: "" };
+  } };
 
   const result = await createPullRequest(report(), {
     root: "/repo",
