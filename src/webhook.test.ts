@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { JiraJob } from "./jira.js";
-import { createWebhookApp, InProcessJobQueue, type JobQueue, type LogRecord } from "./webhook.js";
+import type { JobQueue } from "./job-queue.js";
+import { createWebhookApp, type LogRecord } from "./webhook.js";
 
 const secret = "correct-horse-battery-staple";
 const projects = { APP: { repositoryPath: "/srv/repos/app", baseBranch: "main" } } as const;
@@ -19,7 +20,7 @@ function webhookPayload(): Record<string, unknown> {
 
 test("missing or invalid authentication is rejected before parsing or dispatch", async (t) => {
   let enqueueCalls = 0;
-  const queue: JobQueue = { enqueue: () => { enqueueCalls += 1; return true; } };
+  const queue: JobQueue = { enqueue: async () => { enqueueCalls += 1; return "accepted"; } };
   const { app } = webhookApp(t, queue);
 
   const missing = await post(app, webhookPayload());
@@ -34,7 +35,7 @@ test("missing or invalid authentication is rejected before parsing or dispatch",
 });
 
 test("unsupported content types are rejected", async (t) => {
-  const { app } = webhookApp(t, { enqueue: () => true });
+  const { app } = webhookApp(t, fakeQueue());
   const response = await app.inject({
     method: "POST",
     url: "/webhooks/jira",
@@ -48,7 +49,7 @@ test("unsupported content types are rejected", async (t) => {
 
 test("malformed and invalid payloads are rejected", async (t) => {
   let enqueueCalls = 0;
-  const { app } = webhookApp(t, { enqueue: () => { enqueueCalls += 1; return true; } });
+  const { app } = webhookApp(t, { enqueue: async () => { enqueueCalls += 1; return "accepted"; } });
 
   const malformed = await postRaw(app, "not-json", secret);
   const invalid = await post(app, { webhookEvent: "comment_created" }, secret);
@@ -62,7 +63,7 @@ test("malformed and invalid payloads are rejected", async (t) => {
 });
 
 test("request bodies are limited to 256,000 bytes", async (t) => {
-  const { app } = webhookApp(t, { enqueue: () => true });
+  const { app } = webhookApp(t, fakeQueue());
   const response = await postRaw(app, JSON.stringify({ padding: "x".repeat(256_000) }), secret);
 
   assert.equal(response.statusCode, 413);
@@ -71,7 +72,7 @@ test("request bodies are limited to 256,000 bytes", async (t) => {
 
 test("non-trigger events are filtered without dispatching work", async (t) => {
   let enqueueCalls = 0;
-  const queue: JobQueue = { enqueue: () => { enqueueCalls += 1; return true; } };
+  const queue: JobQueue = { enqueue: async () => { enqueueCalls += 1; return "accepted"; } };
   const { app, logs } = webhookApp(t, queue);
   const candidate = webhookPayload();
   candidate.webhookEvent = "issue_updated";
@@ -83,28 +84,18 @@ test("non-trigger events are filtered without dispatching work", async (t) => {
   assert.equal(logs.at(-1)?.event, "rejected");
 });
 
-test("accepted requests return 202 through an asynchronous dispatcher", async (t) => {
-  let resolveRun!: () => void;
-  const blocker = new Promise<void>((resolve) => { resolveRun = resolve; });
-  let started = false;
+test("accepted requests dispatch the parsed job and return 202", async (t) => {
+  const dispatchedJobs: JiraJob[] = [];
   const logs: LogRecord[] = [];
-  const queue = new InProcessJobQueue(async () => {
-    started = true;
-    await blocker;
-    return { outcome: "created" };
-  }, (record) => logs.push(record));
+  const queue: JobQueue = { enqueue: async (job) => { dispatchedJobs.push(job); return "accepted"; } };
   const { app } = webhookApp(t, queue, logs);
 
   const response = await post(app, webhookPayload(), secret);
   assert.equal(response.statusCode, 202);
   assert.deepEqual(response.json(), { status: "accepted" });
-  assert.equal(started, true);
-  assert.equal(logs.some(({ event }) => event === "completed"), false);
+  assert.equal(dispatchedJobs[0]?.eventId, "APP-42:comment:9001");
+  assert.equal(dispatchedJobs[0]?.repositoryPath, "/srv/repos/app");
   assert.doesNotMatch(JSON.stringify(logs), /correct-horse|Cover edge cases/);
-
-  resolveRun();
-  await eventually(() => logs.some(({ event }) => event === "completed"));
-  assert.equal(logs.find(({ event }) => event === "completed")?.outcome, "created");
 });
 
 test("Fastify logs webhook metadata without secrets or issue descriptions", async (t) => {
@@ -112,7 +103,7 @@ test("Fastify logs webhook metadata without secrets or issue descriptions", asyn
   const app = createWebhookApp({
     secret,
     projects,
-    queue: { enqueue: () => true },
+    queue: fakeQueue(),
     fastifyLogger: { stream: { write: (chunk: string) => { output += chunk; } } },
   });
   t.after(() => app.close());
@@ -124,26 +115,20 @@ test("Fastify logs webhook metadata without secrets or issue descriptions", asyn
   assert.doesNotMatch(output, /correct-horse|Cover edge cases/);
 });
 
-test("duplicate deliveries do not start the same active event twice", async (t) => {
-  let resolveRun!: () => void;
-  const blocker = new Promise<void>((resolve) => { resolveRun = resolve; });
-  let runs = 0;
+test("duplicate queue results return duplicate without logging accepted", async (t) => {
   const logs: LogRecord[] = [];
-  const queue = new InProcessJobQueue(async () => { runs += 1; await blocker; }, (record) => logs.push(record));
+  const queue: JobQueue = { enqueue: async () => "duplicate" };
   const { app } = webhookApp(t, queue, logs);
 
-  const first = await post(app, webhookPayload(), secret);
   const duplicate = await post(app, webhookPayload(), secret);
-  assert.equal(first.statusCode, 202);
   assert.equal(duplicate.statusCode, 202);
   assert.deepEqual(duplicate.json(), { status: "duplicate" });
-  assert.equal(runs, 1);
   assert.equal(logs.filter(({ event }) => event === "duplicate").length, 1);
-  resolveRun();
+  assert.equal(logs.some(({ event }) => event === "accepted"), false);
 });
 
 test("unknown routes return 404 and unsupported Jira methods return 405", async (t) => {
-  const { app } = webhookApp(t, { enqueue: () => true });
+  const { app } = webhookApp(t, fakeQueue());
 
   const unknown = await app.inject({ method: "POST", url: "/unknown" });
   const unsupportedMethod = await app.inject({ method: "GET", url: "/webhooks/jira" });
@@ -156,35 +141,10 @@ test("unknown routes return 404 and unsupported Jira methods return 405", async 
 
 test("webhook secrets must contain at least 16 bytes", () => {
   assert.throws(
-    () => createWebhookApp({ secret: "too-short", projects, queue: { enqueue: () => true }, fastifyLogger: false }),
+    () => createWebhookApp({ secret: "too-short", projects, queue: fakeQueue(), fastifyLogger: false }),
     /at least 16 bytes/,
   );
 });
-
-test("the in-process queue serializes separate jobs for the same repository", async () => {
-  let releaseFirst!: () => void;
-  const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
-  const starts: string[] = [];
-  const queue = new InProcessJobQueue(async (candidate) => {
-    starts.push(candidate.eventId);
-    if (candidate.eventId === "first") await firstBlocked;
-  }, () => undefined);
-
-  assert.equal(queue.enqueue(job("first")), true);
-  assert.equal(queue.enqueue(job("second")), true);
-  await eventually(() => starts.length === 1);
-  assert.deepEqual(starts, ["first"]);
-  releaseFirst();
-  await eventually(() => starts.length === 2);
-  assert.deepEqual(starts, ["first", "second"]);
-});
-
-function job(eventId: string): JiraJob {
-  return {
-    eventId, issueKey: "APP-1", projectKey: "APP", repositoryPath: "/repo", baseBranch: "main",
-    branch: `guillermo/${eventId}`, task: "task",
-  };
-}
 
 function webhookApp(t: TestContext, queue: JobQueue, existingLogs: LogRecord[] = []) {
   const logs = existingLogs;
@@ -199,6 +159,10 @@ function webhookApp(t: TestContext, queue: JobQueue, existingLogs: LogRecord[] =
   return { app, logs };
 }
 
+function fakeQueue(): JobQueue {
+  return { enqueue: async () => "accepted" };
+}
+
 function post(app: ReturnType<typeof createWebhookApp>, body: unknown, suppliedSecret?: string) {
   return postRaw(app, JSON.stringify(body), suppliedSecret);
 }
@@ -207,12 +171,4 @@ function postRaw(app: ReturnType<typeof createWebhookApp>, body: string, supplie
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (suppliedSecret !== undefined) headers["x-guillermo-webhook-secret"] = suppliedSecret;
   return app.inject({ method: "POST", url: "/webhooks/jira", headers, payload: body });
-}
-
-async function eventually(condition: () => boolean): Promise<void> {
-  for (let attempts = 0; attempts < 100; attempts += 1) {
-    if (condition()) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  assert.fail("Condition was not met in time.");
 }

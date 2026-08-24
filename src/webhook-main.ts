@@ -2,8 +2,9 @@ import process from "node:process";
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "./config.js";
 import { parseProjectMap } from "./jira.js";
+import { InProcessJobQueue } from "./job-queue.js";
 import { runGuillermo } from "./run.js";
-import { createWebhookApp, InProcessJobQueue } from "./webhook.js";
+import { createWebhookApp } from "./webhook.js";
 
 loadEnvironment();
 const config = loadConfig();

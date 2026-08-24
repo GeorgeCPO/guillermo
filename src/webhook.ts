@@ -2,12 +2,13 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import Fastify, { LogController, type FastifyInstance, type FastifyServerOptions } from "fastify";
 import type { JiraJob, JiraProjectMap } from "./jira.js";
 import { parseJiraWebhook } from "./jira.js";
+import type { JobQueue } from "./job-queue.js";
 
 const MAX_BODY_BYTES = 256_000;
 const JIRA_WEBHOOK_PATH = "/webhooks/jira";
 
 export interface LogRecord {
-  event: "accepted" | "rejected" | "duplicate" | "started" | "completed" | "failed";
+  event: "accepted" | "rejected" | "duplicate";
   issueKey?: string;
   projectKey?: string;
   eventId?: string;
@@ -17,11 +18,6 @@ export interface LogRecord {
 }
 
 export type Logger = (record: LogRecord) => void;
-export type JobRunner = (job: JiraJob) => Promise<{ outcome?: string } | void>;
-
-export interface JobQueue {
-  enqueue(job: JiraJob): boolean;
-}
 
 export interface WebhookAppOptions {
   secret: string;
@@ -29,34 +25,6 @@ export interface WebhookAppOptions {
   queue: JobQueue;
   logger?: Logger;
   fastifyLogger?: FastifyServerOptions["logger"];
-}
-
-export class InProcessJobQueue implements JobQueue {
-  private readonly activeEvents = new Set<string>();
-  private readonly repositoryTails = new Map<string, Promise<void>>();
-
-  public constructor(private readonly run: JobRunner, private readonly logger: Logger) {}
-
-  enqueue(job: JiraJob): boolean {
-    if (this.activeEvents.has(job.eventId)) return false;
-    this.activeEvents.add(job.eventId);
-
-    const previous = this.repositoryTails.get(job.repositoryPath) ?? Promise.resolve();
-    const current = previous.catch(() => undefined).then(async () => {
-      this.logger(metadata("started", job));
-      try {
-        const result = await this.run(job);
-        this.logger({ ...metadata("completed", job), outcome: result?.outcome ?? "finished" });
-      } catch (error) {
-        this.logger({ ...metadata("failed", job), errorType: error instanceof Error ? error.name : "UnknownError" });
-      }
-    }).finally(() => {
-      this.activeEvents.delete(job.eventId);
-      if (this.repositoryTails.get(job.repositoryPath) === current) this.repositoryTails.delete(job.repositoryPath);
-    });
-    this.repositoryTails.set(job.repositoryPath, current);
-    return true;
-  }
 }
 
 export function createWebhookApp(options: WebhookAppOptions): FastifyInstance {
@@ -113,8 +81,8 @@ export function createWebhookApp(options: WebhookAppOptions): FastifyInstance {
       return reply.status(200).send({ status: "ignored" });
     }
 
-    const queued = options.queue.enqueue(parsed.job);
-    if (!queued) {
+    const result = await options.queue.enqueue(parsed.job);
+    if (result === "duplicate") {
       logger(metadata("duplicate", parsed.job));
       return reply.status(202).send({ status: "duplicate" });
     }
