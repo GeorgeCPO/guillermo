@@ -1,11 +1,9 @@
 import path from "node:path";
 import process from "node:process";
-import { access, realpath } from "node:fs/promises";
-import { runAgent, type AgentReport } from "./agent.js";
 import { loadConfig } from "./config.js";
-import { deriveDefaultBranchName } from "./branch.js";
-import { createPullRequest, type PullRequestResult } from "./pull-request.js";
-import { Repository } from "./repository.js";
+import type { PullRequestResult } from "./pull-request.js";
+import { runGuillermo } from "./run.js";
+import type { AgentReport } from "./agent.js";
 
 interface CliOptions {
   repo: string;
@@ -22,30 +20,12 @@ async function main(): Promise<void> {
   const options = parseCli(process.argv.slice(2));
   // Validate local configuration before changing the target repository.
   const config = loadConfig({ model: options.model, maxSteps: options.maxSteps });
-  await access(options.repo);
-  const root = await realpath(options.repo);
-  const repository = new Repository(root);
-  await repository.assertGitRepository();
-  await repository.assertCleanWorkingTree();
-
-  const originalBranch = await repository.currentBranch();
-  const createdBranch = options.branch ?? deriveDefaultBranchName(options.task);
-  await repository.createAndCheckoutBranch(createdBranch);
-  const startingCommit = await repository.headCommit();
-
-  let report: AgentReport;
-  try {
-    report = await runAgent(config, repository, options.task);
-  } catch (error) {
-    report = await failedAgentReport(repository, error);
-  }
-  const pullRequest = await createPullRequest(report, {
-    root,
+  const { report, originalBranch, createdBranch, pullRequest } = await runGuillermo(config, {
+    repo: options.repo,
     task: options.task,
-    branch: createdBranch,
-    startingCommit,
-    baseBranch: options.baseBranch ?? originalBranch,
-    title: options.prTitle,
+    branch: options.branch,
+    baseBranch: options.baseBranch,
+    prTitle: options.prTitle,
   });
   console.log(renderReport(report, originalBranch, createdBranch, pullRequest));
 }
@@ -89,25 +69,6 @@ function parseCli(args: string[]): CliOptions {
 
 function usage(): never {
   throw new Error("Usage: npm run dev -- --repo /absolute/path/to/repo --task \"Describe the change\" [--branch name] [--base branch] [--pr-title title] [--model model] [--max-steps 12]");
-}
-
-async function failedAgentReport(repository: Repository, error: unknown): Promise<AgentReport> {
-  const failure = error instanceof Error ? error.message : String(error);
-  let changedFiles: string[] = [];
-  let diff = "Could not read the working-tree diff after the agent failed.";
-  try {
-    [changedFiles, diff] = await Promise.all([repository.changedFiles(), repository.diff()]);
-  } catch {
-    // The original agent failure is the useful error to preserve in the final report.
-  }
-  return {
-    summary: `Agent failed: ${failure}`,
-    termination: "failed",
-    changedFiles,
-    diff,
-    testRuns: [],
-    events: ["Agent: failed before finish."],
-  };
 }
 
 function renderReport(report: AgentReport, originalBranch: string, createdBranch: string, pullRequest: PullRequestResult): string {

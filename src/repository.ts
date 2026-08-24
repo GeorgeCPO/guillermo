@@ -50,15 +50,22 @@ export class Repository {
     return stdout.trim();
   }
 
-  async createAndCheckoutBranch(branchName: string): Promise<void> {
+  async createAndCheckoutBranch(branchName: string, startPoint?: string): Promise<void> {
     await this.assertValidNewBranchName(branchName);
     if (await this.localBranchExists(branchName)) {
       throw new Error(`Branch "${branchName}" already exists. Guillermo will not reuse or overwrite it.`);
     }
+    if (startPoint !== undefined) {
+      await this.assertValidBranchName(startPoint, "Git base branch name");
+      if (!await this.localBranchExists(startPoint)) {
+        throw new Error(`Base branch "${startPoint}" does not exist locally. Guillermo will not guess or fetch a replacement.`);
+      }
+    }
 
     try {
-      // git switch -c starts from HEAD and refuses an existing branch, including one created concurrently.
-      await this.runGit(["switch", "--create", branchName]);
+      // An explicit start point prevents unattended webhook runs from inheriting
+      // the previously created branch. Git still refuses a branch created concurrently.
+      await this.runGit(["switch", "--create", branchName, ...(startPoint ? [startPoint] : [])]);
     } catch (error) {
       throw new Error(`Could not create and check out branch "${branchName}": ${gitErrorMessage(error)}`);
     }
@@ -193,10 +200,17 @@ export class Repository {
     if (!branchName || branchName.startsWith("-")) {
       throw new Error("Branch name must be a non-empty Git branch name.");
     }
+    await this.assertValidBranchName(branchName, "Git branch name");
+  }
+
+  private async assertValidBranchName(branchName: string, label: string): Promise<void> {
+    if (!branchName || branchName.startsWith("-")) {
+      throw new Error(`${label} must be a non-empty Git branch name.`);
+    }
     try {
       await this.runGit(["check-ref-format", "--branch", branchName]);
     } catch {
-      throw new Error(`Invalid Git branch name: "${branchName}".`);
+      throw new Error(`Invalid ${label}: "${branchName}".`);
     }
   }
 
