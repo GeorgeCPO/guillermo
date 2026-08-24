@@ -1,6 +1,6 @@
 import OpenAI from "openai";
-import type { GuillermoConfig } from "./config.js";
-import { Repository, type CommandResult } from "./repository.js";
+import type { GuillermoConfig } from "../config/config.js";
+import { Repository, type CommandResult } from "../repository/repository.js";
 
 export interface AgentReport {
   summary: string;

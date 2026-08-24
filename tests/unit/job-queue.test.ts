@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { JiraJob } from "./jira.js";
-import { InProcessJobQueue, type JobQueueLogRecord } from "./job-queue.js";
+import type { JiraJob } from "../../src/integrations/jira/jira.js";
+import { InProcessJobQueue, type JobQueueLogRecord } from "../../src/application/job-queue.js";
 
 test("duplicate active event IDs are rejected and become eligible after completion", async () => {
   const firstRun = deferred<void>();

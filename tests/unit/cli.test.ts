@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { HELP_TEXT, parseCli } from "./cli.js";
+import { HELP_TEXT, parseCli } from "../../src/entrypoints/cli/cli.js";
 
 const cwd = "/work/guillermo";
 
@@ -85,12 +85,12 @@ test("rejects unexpected positional arguments", () => {
 test("returns concise help for both help flags without requiring other options", () => {
   assert.deepEqual(parseCli(["--help"], cwd), { kind: "help", text: HELP_TEXT });
   assert.deepEqual(parseCli(["-h"], cwd), { kind: "help", text: HELP_TEXT });
-  assert.match(HELP_TEXT, /Usage: npm run dev -- --repo <path> --task <description>/);
+  assert.match(HELP_TEXT, /Usage: npm run cli -- --repo <path> --task <description>/);
   assert.match(HELP_TEXT, /-h, --help/);
 });
 
 test("prints help and exits successfully without runtime configuration", () => {
-  const entryPoint = new URL("./index.js", import.meta.url);
+  const entryPoint = new URL("../../src/entrypoints/cli/main.js", import.meta.url);
   const result = spawnSync(process.execPath, [entryPoint.pathname, "--help"], {
     encoding: "utf8",
     env: { PATH: process.env.PATH ?? "" },

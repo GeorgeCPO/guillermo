@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseJiraWebhook, parseProjectMap } from "./jira.js";
+import { parseJiraWebhook, parseProjectMap } from "../../src/integrations/jira/jira.js";
 
 const projects = parseProjectMap(JSON.stringify({
   APP: {

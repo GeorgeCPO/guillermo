@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import type { JiraJob } from "./jira.js";
-import type { JobQueue } from "./job-queue.js";
-import { createWebhookApp, type LogRecord } from "./webhook.js";
+import type { JiraJob } from "../../src/integrations/jira/jira.js";
+import type { JobQueue } from "../../src/application/job-queue.js";
+import { createWebhookApp, type LogRecord } from "../../src/entrypoints/http/server.js";
 
 const secret = "correct-horse-battery-staple";
 const projects = { APP: { repositoryPath: "/srv/repos/app", baseBranch: "main" } } as const;

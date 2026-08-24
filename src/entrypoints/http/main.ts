@@ -1,10 +1,10 @@
 import process from "node:process";
 import type { FastifyInstance } from "fastify";
-import { loadConfig } from "./config.js";
-import { parseProjectMap } from "./jira.js";
-import { InProcessJobQueue } from "./job-queue.js";
-import { runGuillermo } from "./run.js";
-import { createWebhookApp } from "./webhook.js";
+import { loadConfig } from "../../config/config.js";
+import { parseProjectMap } from "../../integrations/jira/jira.js";
+import { InProcessJobQueue } from "../../application/job-queue.js";
+import { runGuillermo } from "../../application/run.js";
+import { createWebhookApp } from "./server.js";
 
 loadEnvironment();
 const config = loadConfig();

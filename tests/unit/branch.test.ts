@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deriveDefaultBranchName } from "./branch.js";
+import { deriveDefaultBranchName } from "../../src/application/branch.js";
 
 test("default branch names are deterministic, readable, and Git-valid", () => {
   assert.equal(deriveDefaultBranchName("Add URL parser tests & fix café bug!"), "guillermo/add-url-parser-tests-fix-cafe-bug");
