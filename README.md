@@ -79,6 +79,10 @@ gh auth login
 Point it at another Git repository (not Guillermo itself unless that is intentional):
 
 ```bash
+npm run dev -- --help
+```
+
+```bash
 npm run dev -- \
   --repo /absolute/path/to/a/repository \
   --task "Add a test for the URL parser and fix any bug the test identifies"
