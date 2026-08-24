@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { promisify } from "node:util";
+import { assertProcessSuccess, defaultProcessRunner } from "./process-runner.js";
 import { Repository } from "./repository.js";
-
-const execFileAsync = promisify(execFile);
+import type { ProcessRequest, ProcessRunner } from "./process-runner.js";
 
 async function createRepository(t: { after(callback: () => Promise<void>): void }): Promise<{ root: string; repository: Repository }> {
   const root = await mkdtemp(path.join(tmpdir(), "guillermo-search-"));
@@ -22,8 +20,10 @@ async function writeFixture(root: string, relativePath: string, contents: string
 }
 
 async function runGit(root: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, { cwd: root });
-  return stdout;
+  return assertProcessSuccess(
+    await defaultProcessRunner.run({ executable: "git", args, cwd: root }),
+    `git ${args[0] ?? "command"}`,
+  ).stdout;
 }
 
 async function createGitRepository(t: { after(callback: () => Promise<void>): void }): Promise<{ root: string; repository: Repository }> {
@@ -155,4 +155,24 @@ test("invalid branch names are rejected before Git can create a branch", async (
   const { repository } = await createGitRepository(t);
 
   await assert.rejects(repository.createAndCheckoutBranch("guillermo/has space"), /Invalid Git branch name/);
+});
+
+test("runTests validates the command and passes an explicit argument array to the shared runner", async () => {
+  const calls: ProcessRequest[] = [];
+  const runner: ProcessRunner = {
+    run: async (request) => {
+      calls.push(request);
+      return { exitCode: 0, stdout: "passed", stderr: "" };
+    },
+  };
+  const repository = new Repository("/repo", runner);
+
+  assert.deepEqual(await repository.runTests("npm run test:unit -- --watch=false"), { exitCode: 0, output: "passed" });
+  assert.deepEqual(calls, [{
+    executable: "npm",
+    args: ["run", "test:unit", "--", "--watch=false"],
+    cwd: "/repo",
+  }]);
+  await assert.rejects(repository.runTests("npm test; echo unsafe"), /shell operators/);
+  assert.equal(calls.length, 1);
 });
