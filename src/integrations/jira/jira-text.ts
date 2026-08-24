@@ -4,6 +4,8 @@ interface AdfNode {
   content?: unknown;
 }
 
+const MAX_ADF_DEPTH = 20;
+
 export function jiraText(value: unknown): string | undefined {
   if (typeof value === "string") return value;
   if (value === null || value === undefined) return "";
@@ -14,7 +16,7 @@ export function jiraText(value: unknown): string | undefined {
 }
 
 function visit(node: unknown, depth: number, pieces: string[]): boolean {
-  if (depth > 20 || !isAdfNode(node)) return false;
+  if (depth > MAX_ADF_DEPTH || !isAdfNode(node)) return false;
 
   if (node.type === "text") {
     if (typeof node.text !== "string") return false;

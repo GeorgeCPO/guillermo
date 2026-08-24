@@ -10,6 +10,12 @@ import { resolveRepositoryPath, validatePatch, validateTestCommand } from "./saf
 
 const IGNORED_DIRECTORIES = new Set([".git", "node_modules", "dist", "coverage", ".guillermo"]);
 const MAX_FILE_BYTES = 100_000;
+const DEFAULT_LIST_ENTRIES = 200;
+const DEFAULT_READ_END_LINE = 400;
+const MAX_READ_LINE_SPAN = 400;
+const DEFAULT_SEARCH_RESULTS = 100;
+const MAX_SEARCH_RESULTS = 100;
+const MAX_COMPACT_OUTPUT_LENGTH = 12_000;
 
 export interface CommandResult {
   exitCode: number;
@@ -69,7 +75,7 @@ export class Repository {
     }
   }
 
-  async listFiles(relativePath = ".", maxEntries = 200): Promise<string[]> {
+  async listFiles(relativePath = ".", maxEntries = DEFAULT_LIST_ENTRIES): Promise<string[]> {
     const start = relativePath === "." ? this.root : resolveRepositoryPath(this.root, relativePath);
     const entries: string[] = [];
     const visit = async (directory: string): Promise<void> => {
@@ -87,7 +93,7 @@ export class Repository {
     return entries;
   }
 
-  async readTextFile(relativePath: string, startLine = 1, endLine = 400): Promise<string> {
+  async readTextFile(relativePath: string, startLine = 1, endLine = DEFAULT_READ_END_LINE): Promise<string> {
     const filePath = resolveRepositoryPath(this.root, relativePath);
     // Lexical validation alone cannot stop a repository-relative symlink from
     // resolving to a file outside the selected repository.
@@ -96,16 +102,16 @@ export class Repository {
     const metadata = await stat(filePath);
     if (!metadata.isFile()) throw new Error("Path is not a file.");
     if (metadata.size > MAX_FILE_BYTES) throw new Error(`File is too large to read (${metadata.size} bytes).`);
-    if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine) || startLine < 1 || endLine < startLine || endLine - startLine > 400) {
+    if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine) || startLine < 1 || endLine < startLine || endLine - startLine > MAX_READ_LINE_SPAN) {
       throw new Error("Line range must be valid and contain at most 400 lines.");
     }
     const lines = (await readFile(filePath, "utf8")).split("\n");
     return lines.slice(startLine - 1, endLine).map((line, index) => `${startLine + index}: ${line}`).join("\n");
   }
 
-  async searchText(query: string, relativePath = ".", maxResults = 100): Promise<SearchResult[]> {
+  async searchText(query: string, relativePath = ".", maxResults = DEFAULT_SEARCH_RESULTS): Promise<SearchResult[]> {
     if (query.length === 0) throw new Error("Search query must be non-empty.");
-    if (!Number.isSafeInteger(maxResults) || maxResults < 1 || maxResults > 100) {
+    if (!Number.isSafeInteger(maxResults) || maxResults < 1 || maxResults > MAX_SEARCH_RESULTS) {
       throw new Error("max_results must be an integer between 1 and 100.");
     }
 
@@ -219,8 +225,9 @@ function gitErrorMessage(error: unknown): string {
 }
 
 function compactOutput(output: string): string {
-  const limit = 12_000;
-  return output.length <= limit ? output : `${output.slice(0, limit)}\n… output truncated by Guillermo`;
+  return output.length <= MAX_COMPACT_OUTPUT_LENGTH
+    ? output
+    : `${output.slice(0, MAX_COMPACT_OUTPUT_LENGTH)}\n… output truncated by Guillermo`;
 }
 
 function isWithinDirectory(directory: string, candidate: string): boolean {

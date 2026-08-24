@@ -11,6 +11,7 @@ import {
 export type { Logger, LogRecord } from "./routes/jira-webhook-handler.js";
 
 const MAX_BODY_BYTES = 256_000;
+const MIN_WEBHOOK_SECRET_BYTES = 16;
 export interface WebhookAppOptions {
   secret: string;
   projects: JiraProjectMap;
@@ -20,7 +21,9 @@ export interface WebhookAppOptions {
 }
 
 export function createWebhookApp(options: WebhookAppOptions): FastifyInstance {
-  if (Buffer.byteLength(options.secret) < 16) throw new Error("GUILLERMO_JIRA_WEBHOOK_SECRET must be at least 16 bytes.");
+  if (Buffer.byteLength(options.secret) < MIN_WEBHOOK_SECRET_BYTES) {
+    throw new Error("GUILLERMO_JIRA_WEBHOOK_SECRET must be at least 16 bytes.");
+  }
 
   const app = Fastify({
     bodyLimit: MAX_BODY_BYTES,

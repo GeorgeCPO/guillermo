@@ -1,5 +1,6 @@
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { MAX_AGENT_STEPS, MIN_AGENT_STEPS } from "../../config/config.js";
 
 export interface CliOptions {
   repo: string;
@@ -24,7 +25,7 @@ Options:
   --base <branch>        Pull-request base branch
   --pr-title <title>     Pull-request title
   --model <model>        OpenAI model override
-  --max-steps <count>    Maximum agent steps (1-50)
+  --max-steps <count>    Maximum agent steps (${MIN_AGENT_STEPS}-${MAX_AGENT_STEPS})
   -h, --help             Show this help`;
 
 const OPTION_DEFINITIONS = {
