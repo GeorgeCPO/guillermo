@@ -1,17 +1,16 @@
-import type { JiraJob } from "../integrations/jira/jira.js";
+import type { CodingJob } from "./coding-job.js";
 
 export type EnqueueResult = "accepted" | "duplicate";
 
 export interface JobQueue {
-  enqueue(job: JiraJob): Promise<EnqueueResult>;
+  enqueue(job: CodingJob): Promise<EnqueueResult>;
 }
 
-export type JobRunner = (job: JiraJob) => Promise<{ outcome?: string } | void>;
+export type JobRunner = (job: CodingJob) => Promise<{ outcome?: string } | void>;
 
 export interface JobQueueLogRecord {
+  [key: string]: string | undefined;
   event: "started" | "completed" | "failed";
-  issueKey: string;
-  projectKey: string;
   eventId: string;
   outcome?: string;
   errorType?: string;
@@ -25,9 +24,9 @@ export class InProcessJobQueue implements JobQueue {
 
   public constructor(private readonly run: JobRunner, private readonly logger: JobQueueLogger) {}
 
-  public enqueue(job: JiraJob): Promise<EnqueueResult> {
-    if (this.activeEvents.has(job.eventId)) return Promise.resolve("duplicate");
-    this.activeEvents.add(job.eventId);
+  public enqueue(job: CodingJob): Promise<EnqueueResult> {
+    if (this.activeEvents.has(job.source.eventId)) return Promise.resolve("duplicate");
+    this.activeEvents.add(job.source.eventId);
 
     const previous = this.repositoryTails.get(job.repositoryPath) ?? Promise.resolve();
     const current = previous.catch(() => undefined).then(async () => {
@@ -39,7 +38,7 @@ export class InProcessJobQueue implements JobQueue {
         this.logger({ ...metadata("failed", job), errorType: error instanceof Error ? error.name : "UnknownError" });
       }
     }).finally(() => {
-      this.activeEvents.delete(job.eventId);
+      this.activeEvents.delete(job.source.eventId);
       if (this.repositoryTails.get(job.repositoryPath) === current) this.repositoryTails.delete(job.repositoryPath);
     });
     this.repositoryTails.set(job.repositoryPath, current);
@@ -47,6 +46,6 @@ export class InProcessJobQueue implements JobQueue {
   }
 }
 
-function metadata(event: JobQueueLogRecord["event"], job: JiraJob): JobQueueLogRecord {
-  return { event, eventId: job.eventId, issueKey: job.issueKey, projectKey: job.projectKey };
+function metadata(event: JobQueueLogRecord["event"], job: CodingJob): JobQueueLogRecord {
+  return { ...job.source.metadata, event, eventId: job.source.eventId };
 }

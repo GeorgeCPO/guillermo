@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import type { JiraJob } from "../../src/integrations/jira/jira.js";
+import type { CodingJob } from "../../src/application/coding-job.js";
 import type { JobQueue } from "../../src/application/job-queue.js";
 import { createWebhookApp, type LogRecord } from "../../src/entrypoints/http/server.js";
 
@@ -85,7 +85,7 @@ test("non-trigger events are filtered without dispatching work", async (t) => {
 });
 
 test("accepted requests dispatch the parsed job and return 202", async (t) => {
-  const dispatchedJobs: JiraJob[] = [];
+  const dispatchedJobs: CodingJob[] = [];
   const logs: LogRecord[] = [];
   const queue: JobQueue = { enqueue: async (job) => { dispatchedJobs.push(job); return "accepted"; } };
   const { app } = webhookApp(t, queue, logs);
@@ -93,7 +93,8 @@ test("accepted requests dispatch the parsed job and return 202", async (t) => {
   const response = await post(app, webhookPayload(), secret);
   assert.equal(response.statusCode, 202);
   assert.deepEqual(response.json(), { status: "accepted" });
-  assert.equal(dispatchedJobs[0]?.eventId, "APP-42:comment:9001");
+  assert.equal(dispatchedJobs[0]?.source.eventId, "APP-42:comment:9001");
+  assert.deepEqual(dispatchedJobs[0]?.source.metadata, { issueKey: "APP-42", projectKey: "APP" });
   assert.equal(dispatchedJobs[0]?.repositoryPath, "/srv/repos/app");
   assert.doesNotMatch(JSON.stringify(logs), /correct-horse|Cover edge cases/);
 });

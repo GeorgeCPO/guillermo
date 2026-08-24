@@ -2,6 +2,7 @@ import process from "node:process";
 import type { AgentReport } from "../../agent/agent.js";
 import { parseCli } from "./cli.js";
 import { loadConfig } from "../../config/config.js";
+import { loadEnvironmentFile } from "../../config/environment.js";
 import type { PullRequestResult } from "../../integrations/github/pull-request.js";
 import { runGuillermo } from "../../application/run.js";
 
@@ -12,7 +13,7 @@ export async function runCli(args: readonly string[], cwd: string): Promise<void
     return;
   }
 
-  loadEnvironment();
+  loadEnvironmentFile();
   const options = parsed.options;
   // Validate local configuration before changing the target repository.
   const config = loadConfig({ model: options.model, maxSteps: options.maxSteps });
@@ -30,18 +31,6 @@ runCli(process.argv.slice(2), process.cwd()).catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : error);
   process.exitCode = 1;
 });
-
-function loadEnvironment(): void {
-  try {
-    process.loadEnvFile();
-  } catch (error: unknown) {
-    if (!(error instanceof Error) || !isMissingEnvFile(error)) throw error;
-  }
-}
-
-function isMissingEnvFile(error: Error): boolean {
-  return "code" in error && error.code === "ENOENT";
-}
 
 function renderReport(report: AgentReport, originalBranch: string, createdBranch: string, pullRequest: PullRequestResult): string {
   const tests = report.testRuns.length === 0

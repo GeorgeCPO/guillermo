@@ -1,7 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { onRequestHookHandler, RouteHandlerMethod } from "fastify";
+import type { CodingJob } from "../../../application/coding-job.js";
 import type { JobQueue } from "../../../application/job-queue.js";
-import { parseJiraWebhook, type JiraJob, type JiraProjectMap } from "../../../integrations/jira/jira.js";
+import { parseJiraWebhook, type JiraProjectMap } from "../../../integrations/jira/jira.js";
 import { HttpError } from "../http-error.js";
 
 export interface LogRecord {
@@ -59,6 +60,11 @@ export function authenticateWebhook(header: string | string[] | undefined, secre
   return timingSafeEqual(suppliedDigest, expectedDigest);
 }
 
-function metadata(event: LogRecord["event"], job: JiraJob): LogRecord {
-  return { event, eventId: job.eventId, issueKey: job.issueKey, projectKey: job.projectKey };
+function metadata(event: LogRecord["event"], job: CodingJob): LogRecord {
+  return {
+    event,
+    eventId: job.source.eventId,
+    issueKey: job.source.metadata.issueKey,
+    projectKey: job.source.metadata.projectKey,
+  };
 }
