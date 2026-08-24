@@ -11,6 +11,11 @@ export interface AgentReport {
   events: string[];
 }
 
+const MAX_LIST_ENTRIES = 500;
+const MAX_READ_END_LINE = 400;
+const MAX_SEARCH_RESULTS = 100;
+const MAX_TOOL_EVENT_DETAIL_LENGTH = 400;
+
 const tools: OpenAI.Responses.FunctionTool[] = [
   {
     type: "function",
@@ -21,7 +26,7 @@ const tools: OpenAI.Responses.FunctionTool[] = [
       type: "object",
       properties: {
         path: { type: "string", description: "Repository-relative path, or . for the root." },
-        max_entries: { type: "integer", minimum: 1, maximum: 500 },
+        max_entries: { type: "integer", minimum: 1, maximum: MAX_LIST_ENTRIES },
       },
       required: ["path", "max_entries"],
       additionalProperties: false,
@@ -37,7 +42,7 @@ const tools: OpenAI.Responses.FunctionTool[] = [
       properties: {
         path: { type: "string" },
         start_line: { type: "integer", minimum: 1 },
-        end_line: { type: "integer", minimum: 1, maximum: 400 },
+        end_line: { type: "integer", minimum: 1, maximum: MAX_READ_END_LINE },
       },
       required: ["path", "start_line", "end_line"],
       additionalProperties: false,
@@ -53,7 +58,7 @@ const tools: OpenAI.Responses.FunctionTool[] = [
       properties: {
         query: { type: "string", minLength: 1, description: "Literal text to find." },
         path: { type: "string", description: "Repository-relative directory, or . for the root." },
-        max_results: { type: "integer", minimum: 1, maximum: 100 },
+        max_results: { type: "integer", minimum: 1, maximum: MAX_SEARCH_RESULTS },
       },
       required: ["query", "path", "max_results"],
       additionalProperties: false,
@@ -216,7 +221,7 @@ function number(value: unknown): number {
 
 function formatToolEvent(step: number, name: string, result: { ok: boolean; output: string }): string {
   if (result.ok) return `${step}. ${name}: ok`;
-  const detail = result.output.replace(/\s+/g, " ").trim().slice(0, 400);
+  const detail = result.output.replace(/\s+/g, " ").trim().slice(0, MAX_TOOL_EVENT_DETAIL_LENGTH);
   return `${step}. ${name}: failed${detail ? ` — ${detail}` : ""}`;
 }
 

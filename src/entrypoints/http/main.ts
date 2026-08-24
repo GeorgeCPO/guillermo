@@ -7,12 +7,17 @@ import { InProcessJobQueue } from "../../application/job-queue.js";
 import { runGuillermo } from "../../application/run.js";
 import { createWebhookApp } from "./server.js";
 
+const DEFAULT_HTTP_PORT = 3000;
+const DEFAULT_HTTP_HOST = "127.0.0.1";
+const MIN_PORT = 1;
+const MAX_PORT = 65_535;
+
 loadEnvironmentFile();
 const config = loadConfig();
 const secret = requiredEnvironment("GUILLERMO_JIRA_WEBHOOK_SECRET");
 const projects = parseProjectMap(requiredEnvironment("GUILLERMO_JIRA_PROJECTS"));
-const port = parsePort(process.env.GUILLERMO_WEBHOOK_PORT ?? "3000");
-const host = process.env.GUILLERMO_WEBHOOK_HOST ?? "127.0.0.1";
+const port = parsePort(process.env.GUILLERMO_WEBHOOK_PORT ?? String(DEFAULT_HTTP_PORT));
+const host = process.env.GUILLERMO_WEBHOOK_HOST ?? DEFAULT_HTTP_HOST;
 
 let app: FastifyInstance;
 const queue = new InProcessJobQueue(async (job) => {
@@ -44,6 +49,8 @@ function requiredEnvironment(name: string): string {
 
 function parsePort(value: string): number {
   const port = Number(value);
-  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) throw new Error("GUILLERMO_WEBHOOK_PORT must be an integer from 1 to 65535.");
+  if (!Number.isSafeInteger(port) || port < MIN_PORT || port > MAX_PORT) {
+    throw new Error("GUILLERMO_WEBHOOK_PORT must be an integer from 1 to 65535.");
+  }
   return port;
 }

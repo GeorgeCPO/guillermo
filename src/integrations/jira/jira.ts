@@ -4,6 +4,12 @@ import type { JiraProjectMap } from "./jira-config.js";
 import { JiraEnvelopeSchema, JiraPayloadObjectSchema, TrustedIssueFieldsSchema } from "./jira-schemas.js";
 import { jiraText } from "./jira-text.js";
 
+const JIRA_COMMENT_CREATED_EVENT = "comment_created";
+const JIRA_TRIGGER_COMMAND = "/guillermo";
+const MAX_SUMMARY_LENGTH = 500;
+const MAX_DESCRIPTION_LENGTH = 10_000;
+const MAX_PR_TITLE_LENGTH = 120;
+
 export { parseProjectMap } from "./jira-config.js";
 export type { JiraProjectConfig, JiraProjectMap } from "./jira-config.js";
 
@@ -17,7 +23,7 @@ export function parseJiraWebhook(payload: unknown, projects: JiraProjectMap): Ji
   if (!payloadObject.success) return { kind: "invalid", reason: "payload_not_object" };
 
   // Only comment creation events are eligible to trigger work.
-  if (payloadObject.data.webhookEvent !== "comment_created") {
+  if (payloadObject.data.webhookEvent !== JIRA_COMMENT_CREATED_EVENT) {
     return { kind: "ignored", reason: "event_not_comment_created" };
   }
 
@@ -40,7 +46,7 @@ export function parseJiraWebhook(payload: unknown, projects: JiraProjectMap): Ji
   if (commentText === undefined) return { kind: "invalid", reason: "invalid_comment_body" };
 
   // No surrounding prose or additional commands are accepted.
-  if (commentText.trim() !== "/guillermo") {
+  if (commentText.trim() !== JIRA_TRIGGER_COMMAND) {
     return { kind: "ignored", reason: "comment_command_not_present" };
   }
 
@@ -53,7 +59,7 @@ export function parseJiraWebhook(payload: unknown, projects: JiraProjectMap): Ji
     return { kind: "invalid", reason: "invalid_description" };
   }
 
-  const summary = bounded(fields.summary.replace(/\s+/g, " "), 500);
+  const summary = bounded(fields.summary.replace(/\s+/g, " "), MAX_SUMMARY_LENGTH);
   return {
     kind: "accepted",
     job: {
@@ -73,12 +79,14 @@ export function parseJiraWebhook(payload: unknown, projects: JiraProjectMap): Ji
 function buildTask(issueKey: string, summary: string, description: string | undefined): string {
   return [
     `Implement the requested change for Jira issue ${issueKey}: ${summary}`,
-    description?.trim() ? `Issue description:\n${bounded(description, 10_000)}` : "Issue description: not provided.",
+    description?.trim()
+      ? `Issue description:\n${bounded(description, MAX_DESCRIPTION_LENGTH)}`
+      : "Issue description: not provided.",
   ].join("\n\n");
 }
 
 function formatTitle(format: string, issueKey: string, summary: string): string {
-  return bounded(format.replaceAll("{issueKey}", issueKey).replaceAll("{summary}", summary), 120);
+  return bounded(format.replaceAll("{issueKey}", issueKey).replaceAll("{summary}", summary), MAX_PR_TITLE_LENGTH);
 }
 
 function bounded(value: string, maxLength: number): string {
