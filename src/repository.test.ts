@@ -106,6 +106,32 @@ test("a clean repository gets a new checked-out working branch", async (t) => {
   assert.equal((await runGit(root, ["rev-parse", "HEAD"])).trim(), originalCommit);
 });
 
+test("an explicit start point prevents a new run from inheriting the previous working branch", async (t) => {
+  const { root, repository } = await createGitRepository(t);
+  const baseBranch = await repository.currentBranch();
+  const baseCommit = (await runGit(root, ["rev-parse", "HEAD"])).trim();
+  await repository.createAndCheckoutBranch("guillermo/first-run");
+  await writeFixture(root, "first-run.txt", "first run\n");
+  await runGit(root, ["add", "first-run.txt"]);
+  await runGit(root, ["commit", "-m", "First run"]);
+  const firstRunCommit = (await runGit(root, ["rev-parse", "HEAD"])).trim();
+
+  await repository.createAndCheckoutBranch("guillermo/second-run", baseBranch);
+
+  assert.equal(await repository.currentBranch(), "guillermo/second-run");
+  assert.equal((await runGit(root, ["rev-parse", "HEAD"])).trim(), baseCommit);
+  assert.notEqual((await runGit(root, ["rev-parse", "HEAD"])).trim(), firstRunCommit);
+});
+
+test("an explicit start point must be an existing local branch", async (t) => {
+  const { repository } = await createGitRepository(t);
+
+  await assert.rejects(
+    repository.createAndCheckoutBranch("guillermo/new-run", "missing-base"),
+    /does not exist locally/,
+  );
+});
+
 test("a dirty repository is rejected before a working branch is created", async (t) => {
   const { root, repository } = await createGitRepository(t);
   const originalBranch = await repository.currentBranch();
