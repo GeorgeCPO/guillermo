@@ -1,12 +1,10 @@
-import { spawn } from "node:child_process";
 import type { AgentReport } from "./agent.js";
-
-export interface ProcessOutput {
-  stdout: string;
-  stderr: string;
-}
-
-export type ProcessRunner = (program: string, args: string[], cwd: string) => Promise<ProcessOutput>;
+import { ProcessGitClient, type GitClient } from "./git-client.js";
+import {
+  assertProcessSuccess,
+  defaultProcessRunner,
+  type ProcessRunner,
+} from "./process-runner.js";
 
 export interface PullRequestOptions {
   root: string;
@@ -63,7 +61,8 @@ export function derivePullRequestTitle(task: string): string {
 export async function createPullRequest(
   report: AgentReport,
   options: PullRequestOptions,
-  run: ProcessRunner = runProcess,
+  runner: ProcessRunner = defaultProcessRunner,
+  git: GitClient = new ProcessGitClient(runner),
 ): Promise<PullRequestResult> {
   const eligibility = evaluatePullRequestEligibility(report);
   if (!eligibility.eligible) return { status: "skipped", reason: eligibility.reason };
@@ -71,43 +70,42 @@ export async function createPullRequest(
   let commitSha: string | undefined;
   let pushedBranch: string | undefined;
   try {
-    await run("git", ["remote", "get-url", "origin"], options.root);
-    await run("git", ["check-ref-format", "--branch", options.baseBranch], options.root);
-    await run("gh", ["auth", "status"], options.root);
+    await git.originUrl(options.root);
+    if (!await git.isValidBranchName(options.root, options.baseBranch)) {
+      throw new Error(`Invalid Git base branch name: "${options.baseBranch}".`);
+    }
+    await runGitHub(runner, options.root, ["auth", "status"]);
 
-    try {
-      await run("git", ["ls-remote", "--exit-code", "--heads", "origin", `refs/heads/${options.branch}`], options.root);
+    if (await git.remoteBranchExists(options.root, options.branch)) {
       return { status: "skipped", reason: `Remote branch "${options.branch}" already exists; Guillermo will not push an existing branch.` };
-    } catch (error) {
-      if (exitCode(error) !== 2) throw error;
     }
 
-    const currentBranch = (await run("git", ["branch", "--show-current"], options.root)).stdout.trim();
+    const currentBranch = await git.currentBranch(options.root);
     if (currentBranch !== options.branch) {
       return { status: "skipped", reason: "The working branch changed during the agent run; Guillermo will not publish it." };
     }
-    const currentHead = (await run("git", ["rev-parse", "HEAD"], options.root)).stdout.trim();
+    const currentHead = await git.head(options.root);
     if (currentHead !== options.startingCommit) {
       return { status: "skipped", reason: "HEAD changed during the agent run; Guillermo will not add another commit." };
     }
-    const changedPaths = parseChangedPaths((await run("git", ["status", "--porcelain=v1", "-z"], options.root)).stdout);
+    const changedPaths = parseChangedPaths(await git.porcelainStatus(options.root));
     if (changedPaths.length === 0) {
       return { status: "skipped", reason: "No uncommitted files remained to commit." };
     }
 
-    await run("git", ["add", "--all", "--", ...changedPaths], options.root);
-    await run("git", ["commit", "-m", deriveCommitMessage(options.task)], options.root);
-    commitSha = (await run("git", ["rev-parse", "HEAD"], options.root)).stdout.trim();
-    await run("git", ["push", "--set-upstream", "origin", options.branch], options.root);
+    await git.addPaths(options.root, changedPaths);
+    await git.commit(options.root, deriveCommitMessage(options.task));
+    commitSha = await git.head(options.root);
+    await git.pushBranch(options.root, options.branch);
     pushedBranch = options.branch;
     const title = options.title?.trim() || derivePullRequestTitle(options.task);
-    const prOutput = await run("gh", [
+    const prOutput = await runGitHub(runner, options.root, [
       "pr", "create",
       "--base", options.baseBranch,
       "--head", options.branch,
       "--title", title,
       "--body", `Created by Guillermo for: ${compactTask(options.task, 500)}`,
-    ], options.root);
+    ]);
     const pullRequestUrl = prOutput.stdout.trim();
     if (!pullRequestUrl) throw new Error("gh pr create completed without printing a pull request URL.");
 
@@ -140,35 +138,14 @@ function compactTask(task: string, maxLength: number): string {
   return value.length <= maxLength ? value : `${value.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
 }
 
-function exitCode(error: unknown): number | undefined {
-  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "number"
-    ? error.code
-    : undefined;
-}
-
 function commandErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    const stderr = typeof (error as Error & { stderr?: unknown }).stderr === "string"
-      ? (error as Error & { stderr: string }).stderr.trim()
-      : "";
-    return stderr || error.message;
-  }
+  if (error instanceof Error) return error.message;
   return String(error);
 }
 
-function runProcess(program: string, args: string[], cwd: string): Promise<ProcessOutput> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(program, args, { cwd, stdio: "pipe" });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
-    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) resolve({ stdout, stderr });
-      else reject(Object.assign(new Error(`${program} ${args[0] ?? ""} exited with ${code}`), { code, stdout, stderr }));
-    });
-  });
+async function runGitHub(runner: ProcessRunner, cwd: string, args: readonly string[]) {
+  return assertProcessSuccess(
+    await runner.run({ executable: "gh", args, cwd }),
+    `gh ${args[0] ?? "command"}`,
+  );
 }
