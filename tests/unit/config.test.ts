@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { loadConfig } from "./config.js";
+import { loadConfig } from "../../src/config/config.js";
 
 test("configuration preserves the allowed max-step range", () => {
   const originalApiKey = process.env.OPENAI_API_KEY;

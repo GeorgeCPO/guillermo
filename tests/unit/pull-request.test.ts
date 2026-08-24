@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AgentReport } from "./agent.js";
+import type { AgentReport } from "../../src/agent/agent.js";
 import {
   createPullRequest,
   deriveCommitMessage,
   derivePullRequestTitle,
   evaluatePullRequestEligibility,
   parseChangedPaths,
-} from "./pull-request.js";
-import type { ProcessRunner } from "./process-runner.js";
+} from "../../src/integrations/github/pull-request.js";
+import type { ProcessRunner } from "../../src/infrastructure/process/process-runner.js";
 
 function report(overrides: Partial<AgentReport> = {}): AgentReport {
   return {

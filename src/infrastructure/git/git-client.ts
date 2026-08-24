@@ -3,7 +3,7 @@ import {
   defaultProcessRunner,
   type ProcessResult,
   type ProcessRunner,
-} from "./process-runner.js";
+} from "../process/process-runner.js";
 
 export interface GitClient {
   assertRepository(cwd: string): Promise<void>;

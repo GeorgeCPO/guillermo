@@ -1,4 +1,4 @@
-import type { JiraJob } from "./jira.js";
+import type { JiraJob } from "../integrations/jira/jira.js";
 
 export type EnqueueResult = "accepted" | "duplicate";
 

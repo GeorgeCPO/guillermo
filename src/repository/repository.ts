@@ -1,11 +1,11 @@
 import { TextDecoder } from "node:util";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { ProcessGitClient, type GitClient } from "./git-client.js";
+import { ProcessGitClient, type GitClient } from "../infrastructure/git/git-client.js";
 import {
   defaultProcessRunner,
   type ProcessRunner,
-} from "./process-runner.js";
+} from "../infrastructure/process/process-runner.js";
 import { resolveRepositoryPath, validatePatch, validateTestCommand } from "./safety.js";
 
 const IGNORED_DIRECTORIES = new Set([".git", "node_modules", "dist", "coverage", ".guillermo"]);
@@ -89,6 +89,10 @@ export class Repository {
 
   async readTextFile(relativePath: string, startLine = 1, endLine = 400): Promise<string> {
     const filePath = resolveRepositoryPath(this.root, relativePath);
+    // Lexical validation alone cannot stop a repository-relative symlink from
+    // resolving to a file outside the selected repository.
+    const [realRoot, realFilePath] = await Promise.all([realpath(this.root), realpath(filePath)]);
+    if (!isWithinDirectory(realRoot, realFilePath)) throw new Error("File path resolved outside the repository root.");
     const metadata = await stat(filePath);
     if (!metadata.isFile()) throw new Error("Path is not a file.");
     if (metadata.size > MAX_FILE_BYTES) throw new Error(`File is too large to read (${metadata.size} bytes).`);

@@ -5,14 +5,17 @@
   "description": "A deliberately small, local coding agent for learning.",
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
+    "clean:test": "rm -rf dist-test",
     "dev": "tsx src/index.ts",
-    "dev:webhooks": "tsx src/webhook-main.ts",
+    "dev:webhooks": "npm run dev",
     "start": "node dist/index.js",
-    "start:webhooks": "node dist/webhook-main.js",
-    "test": "npm run clean && npm run build && node --test dist/**/*.test.js",
-    "check": "tsc --noEmit"
+    "start:webhooks": "npm start",
+    "cli": "tsx src/entrypoints/cli/main.ts",
+    "start:cli": "node dist/entrypoints/cli/main.js",
+    "test": "npm run clean:test && tsc -p tsconfig.test.json && node --test 'dist-test/tests/**/*.test.js'",
+    "check": "tsc -p tsconfig.test.json --noEmit"
   },
   "dependencies": {
     "execa": "^9.6.1",

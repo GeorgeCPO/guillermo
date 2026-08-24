@@ -3,7 +3,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { ExecaProcessRunner } from "./process-runner.js";
+import { ExecaProcessRunner } from "../../src/infrastructure/process/process-runner.js";
 
 async function workingDirectory(t: { after(callback: () => Promise<void>): void }): Promise<string> {
   const cwd = await mkdtemp(path.join(tmpdir(), "guillermo-process-"));
