@@ -15,7 +15,7 @@ Given a task and a target Git repository, Guillermo asks an OpenAI model to use 
 
 Before the run, Guillermo requires a clean working tree and creates a new local working branch from the current commit. After a successful `finish`, at least one changed file, and at least one passing `run_tests` result, it creates one commit, pushes that newly created branch to `origin`, and creates a GitHub pull request into the starting branch. The report includes the commit SHA, pushed branch, PR URL, or the reason publishing was skipped. Guillermo has no general shell tool and refuses patches outside the selected repository.
 
-## Jira webhook (Stage 9)
+## HTTP service and Jira webhook (Stage 9)
 
 The Stage 9 trigger is deliberately exact: a Jira `comment_created` webhook starts work only when the entire plain-text comment is `/guillermo` (surrounding whitespace is allowed). Jira Cloud's Atlassian Document Format is also accepted when it resolves to that exact text. Text after the command is not treated as an instruction. The coding task is built only from the validated issue key, project key, summary, and description.
 
@@ -45,10 +45,17 @@ GUILLERMO_WEBHOOK_HOST=127.0.0.1
 GUILLERMO_WEBHOOK_PORT=3000
 ```
 
-Start the local Fastify listener after completing the regular setup:
+Start the local Fastify HTTP service after completing the regular setup:
 
 ```bash
-npm run dev:webhooks
+npm run dev
+```
+
+For a production build, compile and launch the same HTTP entrypoint:
+
+```bash
+npm run build
+npm start
 ```
 
 For a local smoke test, replace the header value with the value in your `.env`:
@@ -74,16 +81,16 @@ cp .env.example .env
 gh auth login
 ```
 
-## Run it
+## Run the CLI
 
 Point it at another Git repository (not Guillermo itself unless that is intentional):
 
 ```bash
-npm run dev -- --help
+npm run cli -- --help
 ```
 
 ```bash
-npm run dev -- \
+npm run cli -- \
   --repo /absolute/path/to/a/repository \
   --task "Add a test for the URL parser and fix any bug the test identifies"
 ```
@@ -93,7 +100,7 @@ By default, the working branch is derived deterministically from the task (for e
 Use `--base` to target a different base branch, or `--pr-title` to choose the pull-request title. Without them, the base is the branch Guillermo started from and both the commit message and title are derived from the task. `--model` overrides `GUILLERMO_MODEL`, `--max-steps` caps tool calls (the default is 20), and `--branch` names the new branch:
 
 ```bash
-npm run dev -- \
+npm run cli -- \
   --repo /path/to/repo \
   --task "Add parser coverage" \
   --branch guillermo/parser-coverage \

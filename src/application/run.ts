@@ -1,9 +1,9 @@
 import { access, realpath } from "node:fs/promises";
-import { runAgent, type AgentReport } from "./agent.js";
-import type { GuillermoConfig } from "./config.js";
+import { runAgent, type AgentReport } from "../agent/agent.js";
+import type { GuillermoConfig } from "../config/config.js";
 import { deriveDefaultBranchName } from "./branch.js";
-import { createPullRequest, type PullRequestResult } from "./pull-request.js";
-import { Repository } from "./repository.js";
+import { createPullRequest, type PullRequestResult } from "../integrations/github/pull-request.js";
+import { Repository } from "../repository/repository.js";
 
 export interface RunOptions {
   repo: string;

@@ -1,4 +1,4 @@
-import { deriveDefaultBranchName } from "./branch.js";
+import { deriveDefaultBranchName } from "../../application/branch.js";
 import type { JiraProjectMap } from "./jira-config.js";
 import { JiraEnvelopeSchema, JiraPayloadObjectSchema, TrustedIssueFieldsSchema } from "./jira-schemas.js";
 import { jiraText } from "./jira-text.js";

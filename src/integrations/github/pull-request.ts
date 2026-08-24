@@ -1,10 +1,10 @@
-import type { AgentReport } from "./agent.js";
-import { ProcessGitClient, type GitClient } from "./git-client.js";
+import type { AgentReport } from "../../agent/agent.js";
+import { ProcessGitClient, type GitClient } from "../../infrastructure/git/git-client.js";
 import {
   assertProcessSuccess,
   defaultProcessRunner,
   type ProcessRunner,
-} from "./process-runner.js";
+} from "../../infrastructure/process/process-runner.js";
 
 export interface PullRequestOptions {
   root: string;

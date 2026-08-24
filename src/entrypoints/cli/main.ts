@@ -1,9 +1,9 @@
 import process from "node:process";
-import type { AgentReport } from "./agent.js";
+import type { AgentReport } from "../../agent/agent.js";
 import { parseCli } from "./cli.js";
-import { loadConfig } from "./config.js";
-import type { PullRequestResult } from "./pull-request.js";
-import { runGuillermo } from "./run.js";
+import { loadConfig } from "../../config/config.js";
+import type { PullRequestResult } from "../../integrations/github/pull-request.js";
+import { runGuillermo } from "../../application/run.js";
 
 export async function runCli(args: readonly string[], cwd: string): Promise<void> {
   const parsed = parseCli(args, cwd);
@@ -25,6 +25,11 @@ export async function runCli(args: readonly string[], cwd: string): Promise<void
   });
   console.log(renderReport(report, originalBranch, createdBranch, pullRequest));
 }
+
+runCli(process.argv.slice(2), process.cwd()).catch((error: unknown) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exitCode = 1;
+});
 
 function loadEnvironment(): void {
   try {

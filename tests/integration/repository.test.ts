@@ -3,9 +3,9 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { assertProcessSuccess, defaultProcessRunner } from "./process-runner.js";
-import { Repository } from "./repository.js";
-import type { ProcessRequest, ProcessRunner } from "./process-runner.js";
+import { assertProcessSuccess, defaultProcessRunner } from "../../src/infrastructure/process/process-runner.js";
+import { Repository } from "../../src/repository/repository.js";
+import type { ProcessRequest, ProcessRunner } from "../../src/infrastructure/process/process-runner.js";
 
 async function createRepository(t: { after(callback: () => Promise<void>): void }): Promise<{ root: string; repository: Repository }> {
   const root = await mkdtemp(path.join(tmpdir(), "guillermo-search-"));
@@ -64,6 +64,16 @@ test("search_repository keeps paths within the repository and blocks sensitive p
   await assert.rejects(repository.searchText("needle", "package-lock.json", 10), /blocked/);
   await mkdir(path.join(root, "dist"));
   await assert.rejects(repository.searchText("needle", "dist", 10), /ignored/);
+});
+
+test("read_file rejects a symlink whose target is outside the repository", async (t) => {
+  const { root, repository } = await createRepository(t);
+  const outside = await mkdtemp(path.join(tmpdir(), "guillermo-read-outside-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await writeFixture(outside, "secret.txt", "outside contents\n");
+  await symlink(path.join(outside, "secret.txt"), path.join(root, "linked.txt"));
+
+  await assert.rejects(repository.readTextFile("linked.txt"), /outside the repository root/);
 });
 
 test("search_repository validates its query and result limit", async (t) => {

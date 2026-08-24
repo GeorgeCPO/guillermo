@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ProcessGitClient } from "./git-client.js";
-import type { ProcessRequest, ProcessResult, ProcessRunner } from "./process-runner.js";
+import { ProcessGitClient } from "../../src/infrastructure/git/git-client.js";
+import type { ProcessRequest, ProcessResult, ProcessRunner } from "../../src/infrastructure/process/process-runner.js";
 
 class FakeRunner implements ProcessRunner {
   readonly calls: ProcessRequest[] = [];

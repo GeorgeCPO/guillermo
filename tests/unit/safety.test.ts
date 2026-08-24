@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveRepositoryPath, validatePatch, validateTestCommand } from "./safety.js";
+import { resolveRepositoryPath, validatePatch, validateTestCommand } from "../../src/repository/safety.js";
 
 test("repository paths remain inside the repository", () => {
   assert.equal(resolveRepositoryPath("/tmp/repo", "src/index.ts"), "/tmp/repo/src/index.ts");
