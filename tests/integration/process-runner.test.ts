@@ -73,3 +73,39 @@ test("ExecaProcessRunner bounds captured output", async (t) => {
   assert.equal(stdoutResult.error?.kind, "output-limit");
   assert.equal(stderrResult.error?.kind, "output-limit");
 });
+
+test("ExecaProcessRunner passes an exact environment and distinguishes timeout, cancellation, and spawn failure", async (t) => {
+  const cwd = await workingDirectory(t);
+  const runner = new ExecaProcessRunner();
+  const environment = await runner.run({
+    executable: process.execPath,
+    args: ["-e", "process.stdout.write(JSON.stringify(process.env))"],
+    cwd,
+    env: { ONLY_THIS: "visible" },
+  });
+  const childEnvironment = JSON.parse(environment.stdout) as Record<string, string>;
+  assert.equal(childEnvironment.ONLY_THIS, "visible");
+  assert.equal(childEnvironment.OPENAI_API_KEY, undefined);
+  assert.equal(childEnvironment.PATH, undefined);
+
+  const timedOut = await runner.run({
+    executable: process.execPath,
+    args: ["-e", "setInterval(() => {}, 1000)"],
+    cwd,
+    timeoutMs: 20,
+  });
+  assert.equal(timedOut.error?.kind, "timeout");
+
+  const controller = new AbortController();
+  controller.abort();
+  const cancelled = await runner.run({
+    executable: process.execPath,
+    args: ["-e", "setInterval(() => {}, 1000)"],
+    cwd,
+    signal: controller.signal,
+  });
+  assert.equal(cancelled.error?.kind, "cancelled");
+
+  const spawnFailure = await runner.run({ executable: "guillermo-command-that-does-not-exist", args: [], cwd });
+  assert.equal(spawnFailure.error?.kind, "spawn");
+});

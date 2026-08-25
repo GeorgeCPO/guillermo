@@ -2,9 +2,12 @@ import process from "node:process";
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "../../config/config.js";
 import { loadEnvironmentFile } from "../../config/environment.js";
+import { loadWebhookRuntimeConfig } from "../../config/webhook-config.js";
 import { parseProjectMap } from "../../integrations/jira/jira.js";
 import { InProcessJobQueue } from "../../application/job-queue.js";
-import { runGuillermo } from "../../application/run.js";
+import { runRemoteJob } from "../../application/remote-job.js";
+import { ManagedWorkspaceProvider } from "../../application/managed-workspace.js";
+import { GitHubAppTokenProvider, GitHubRestApi } from "../../integrations/github/github-app.js";
 import { createWebhookApp } from "./server.js";
 
 const DEFAULT_HTTP_PORT = 3000;
@@ -16,19 +19,16 @@ loadEnvironmentFile();
 const config = loadConfig();
 const secret = requiredEnvironment("GUILLERMO_JIRA_WEBHOOK_SECRET");
 const projects = parseProjectMap(requiredEnvironment("GUILLERMO_JIRA_PROJECTS"));
+const webhookConfig = loadWebhookRuntimeConfig();
+const tokenProvider = new GitHubAppTokenProvider(webhookConfig.githubApp);
+const github = new GitHubRestApi(tokenProvider);
+const workspaces = new ManagedWorkspaceProvider(tokenProvider);
 const port = parsePort(process.env.GUILLERMO_WEBHOOK_PORT ?? String(DEFAULT_HTTP_PORT));
 const host = process.env.GUILLERMO_WEBHOOK_HOST ?? DEFAULT_HTTP_HOST;
 
 let app: FastifyInstance;
 const queue = new InProcessJobQueue(async (job) => {
-  const result = await runGuillermo(config, {
-    repo: job.repositoryPath,
-    task: job.task,
-    branch: job.branch,
-    branchStartPoint: job.baseBranch,
-    baseBranch: job.baseBranch,
-    prTitle: job.prTitle,
-  });
+  const result = await runRemoteJob(config, job, webhookConfig.commitAuthor, github, workspaces);
   return { outcome: result.pullRequest.status };
 }, (record) => app.log.info(record));
 
