@@ -1,4 +1,5 @@
 import type { CodingJob } from "./coding-job.js";
+import { repositoryIdentity } from "./repository-target.js";
 
 export type EnqueueResult = "accepted" | "duplicate";
 
@@ -28,7 +29,8 @@ export class InProcessJobQueue implements JobQueue {
     if (this.activeEvents.has(job.source.eventId)) return Promise.resolve("duplicate");
     this.activeEvents.add(job.source.eventId);
 
-    const previous = this.repositoryTails.get(job.repositoryPath) ?? Promise.resolve();
+    const queueKey = repositoryIdentity(job.repository);
+    const previous = this.repositoryTails.get(queueKey) ?? Promise.resolve();
     const current = previous.catch(() => undefined).then(async () => {
       this.logger(metadata("started", job));
       try {
@@ -39,9 +41,9 @@ export class InProcessJobQueue implements JobQueue {
       }
     }).finally(() => {
       this.activeEvents.delete(job.source.eventId);
-      if (this.repositoryTails.get(job.repositoryPath) === current) this.repositoryTails.delete(job.repositoryPath);
+      if (this.repositoryTails.get(queueKey) === current) this.repositoryTails.delete(queueKey);
     });
-    this.repositoryTails.set(job.repositoryPath, current);
+    this.repositoryTails.set(queueKey, current);
     return Promise.resolve("accepted");
   }
 }

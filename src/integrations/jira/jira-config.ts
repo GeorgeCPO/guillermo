@@ -1,19 +1,18 @@
-import path from "node:path";
 import { z } from "zod";
+import { isSafeBranchName, parseRepositorySlug, type RepositoryTarget } from "../../application/repository-target.js";
 import { ProjectKeySchema } from "./jira-schemas.js";
 
-const MAX_BRANCH_NAME_LENGTH = 200;
 const MAX_PR_TITLE_FORMAT_LENGTH = 200;
 
 const JiraProjectMapSchema = z.record(z.string(), z.unknown());
 const JiraProjectCandidateSchema = z.looseObject({
-  repositoryPath: z.unknown(),
+  repository: z.unknown(),
   baseBranch: z.unknown(),
   prTitleFormat: z.unknown().optional(),
 });
 const JiraProjectConfigSchema = z.object({
-  repositoryPath: z.string().refine(path.isAbsolute).transform((value) => path.resolve(value)),
-  baseBranch: z.string().refine(isSafeBranch),
+  repository: z.custom<RepositoryTarget>(),
+  baseBranch: z.string().refine(isSafeBranchName),
   prTitleFormat: z.string().refine(isSafeTitleFormat).optional(),
 });
 
@@ -51,9 +50,12 @@ function parseProjectConfig(projectKey: string, value: unknown): JiraProjectConf
     throw new Error("Each Jira project mapping needs a valid uppercase project key and object value.");
   }
 
-  const repositoryPath = JiraProjectConfigSchema.shape.repositoryPath.safeParse(candidate.data.repositoryPath);
-  if (!repositoryPath.success) {
-    throw new Error(`Jira project ${projectKey} must configure an absolute repositoryPath.`);
+  let repository: RepositoryTarget;
+  try {
+    if (typeof candidate.data.repository !== "string") throw new Error();
+    repository = parseRepositorySlug(candidate.data.repository);
+  } catch {
+    throw new Error(`Jira project ${projectKey} must configure a valid GitHub repository as owner/name.`);
   }
 
   const baseBranch = JiraProjectConfigSchema.shape.baseBranch.safeParse(candidate.data.baseBranch);
@@ -67,15 +69,10 @@ function parseProjectConfig(projectKey: string, value: unknown): JiraProjectConf
   }
 
   return {
-    repositoryPath: repositoryPath.data,
+    repository,
     baseBranch: baseBranch.data,
     ...(prTitleFormat.data === undefined ? {} : { prTitleFormat: prTitleFormat.data }),
   };
-}
-
-function isSafeBranch(value: string): boolean {
-  return value.length > 0 && value.length <= MAX_BRANCH_NAME_LENGTH && !value.startsWith("-") && !value.startsWith(".") && !value.endsWith(".")
-    && !value.includes("..") && !value.includes("@{") && !/[\s~^:?*[\\]/.test(value) && !value.endsWith(".lock");
 }
 
 function isSafeTitleFormat(value: string): boolean {
