@@ -26,7 +26,7 @@ test("ProcessGitClient constructs explicit Git argument arrays and forwards patc
     { executable: "git", args: ["switch", "--create", "guillermo/topic", "main"], cwd: "/repo" },
     { executable: "git", args: ["apply", "--check", "--whitespace=error-all", "-"], cwd: "/repo", input: "diff contents" },
     { executable: "git", args: ["add", "--all", "--", "a file.ts", "semi;colon.ts"], cwd: "/repo" },
-    { executable: "git", args: ["push", "--set-upstream", "origin", "guillermo/topic"], cwd: "/repo" },
+    { executable: "git", args: ["push", "--set-upstream", "origin", "guillermo/topic"], cwd: "/repo", timeoutMs: 300_000, maxOutputBytes: 100_000 },
   ]);
 });
 
@@ -40,6 +40,8 @@ test("ProcessGitClient gives git ls-remote exit 2 domain meaning", async () => {
     executable: "git",
     args: ["ls-remote", "--exit-code", "--heads", "origin", "refs/heads/guillermo/topic"],
     cwd: "/repo",
+    timeoutMs: 300_000,
+    maxOutputBytes: 100_000,
   });
 });
 

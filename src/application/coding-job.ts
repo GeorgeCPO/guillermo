@@ -1,3 +1,5 @@
+import type { RepositoryTarget } from "./repository-target.js";
+
 export interface CodingJobSource {
   eventId: string;
   metadata: Readonly<Record<string, string>>;
@@ -5,7 +7,7 @@ export interface CodingJobSource {
 
 export interface CodingJob {
   source: CodingJobSource;
-  repositoryPath: string;
+  repository: RepositoryTarget;
   baseBranch: string;
   branch: string;
   task: string;

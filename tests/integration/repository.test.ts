@@ -169,19 +169,23 @@ test("invalid branch names are rejected before Git can create a branch", async (
 
 test("runTests validates the command and passes an explicit argument array to the shared runner", async () => {
   const calls: ProcessRequest[] = [];
+  const safeEnvironment = { PATH: "/bin", HOME: "/tmp/safe" };
   const runner: ProcessRunner = {
     run: async (request) => {
       calls.push(request);
       return { exitCode: 0, stdout: "passed", stderr: "" };
     },
   };
-  const repository = new Repository("/repo", runner);
+  const repository = new Repository("/repo", runner, undefined, safeEnvironment);
 
   assert.deepEqual(await repository.runTests("npm run test:unit -- --watch=false"), { exitCode: 0, output: "passed" });
   assert.deepEqual(calls, [{
     executable: "npm",
     args: ["run", "test:unit", "--", "--watch=false"],
     cwd: "/repo",
+    env: safeEnvironment,
+    timeoutMs: 600_000,
+    maxOutputBytes: 250_000,
   }]);
   await assert.rejects(repository.runTests("npm test; echo unsafe"), /shell operators/);
   assert.equal(calls.length, 1);

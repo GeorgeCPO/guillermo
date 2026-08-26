@@ -5,7 +5,7 @@ import type { JobQueue } from "../../src/application/job-queue.js";
 import { createWebhookApp, type LogRecord } from "../../src/entrypoints/http/server.js";
 
 const secret = "correct-horse-battery-staple";
-const projects = { APP: { repositoryPath: "/srv/repos/app", baseBranch: "main" } } as const;
+const projects = { APP: { repository: { owner: "my-org", name: "app" }, baseBranch: "main" } } as const;
 
 function webhookPayload(): Record<string, unknown> {
   return {
@@ -95,7 +95,7 @@ test("accepted requests dispatch the parsed job and return 202", async (t) => {
   assert.deepEqual(response.json(), { status: "accepted" });
   assert.equal(dispatchedJobs[0]?.source.eventId, "APP-42:comment:9001");
   assert.deepEqual(dispatchedJobs[0]?.source.metadata, { issueKey: "APP-42", projectKey: "APP" });
-  assert.equal(dispatchedJobs[0]?.repositoryPath, "/srv/repos/app");
+  assert.deepEqual(dispatchedJobs[0]?.repository, { owner: "my-org", name: "app" });
   assert.doesNotMatch(JSON.stringify(logs), /correct-horse|Cover edge cases/);
 });
 

@@ -1,4 +1,9 @@
 import type { AgentReport } from "../../agent/agent.js";
+import { repositoryHttpsUrl, type RepositoryTarget } from "../../application/repository-target.js";
+import type { GitCommitAuthor } from "../../config/webhook-config.js";
+import type { GitAuthentication } from "../../infrastructure/git/git-authentication.js";
+import type { PullRequestApi } from "./github-app.js";
+import { repositoryCommandEnvironment } from "../../infrastructure/process/safe-environment.js";
 import { ProcessGitClient, type GitClient } from "../../infrastructure/git/git-client.js";
 import {
   assertProcessSuccess,
@@ -19,6 +24,11 @@ export interface PullRequestOptions {
   startingCommit: string;
   baseBranch: string;
   title?: string;
+}
+
+export interface RemotePullRequestOptions extends PullRequestOptions {
+  repository: RepositoryTarget;
+  commitAuthor: GitCommitAuthor;
 }
 
 export interface PullRequestResult {
@@ -118,6 +128,65 @@ export async function createPullRequest(
     return { status: "created", commitSha, pushedBranch, pullRequestUrl };
   } catch (error) {
     return { status: "failed", reason: commandErrorMessage(error), commitSha, pushedBranch };
+  }
+}
+
+/** Publishes a managed checkout with GitHub App credentials and the GitHub REST API. */
+export async function createRemotePullRequest(
+  report: AgentReport,
+  options: RemotePullRequestOptions,
+  authentication: GitAuthentication,
+  api: PullRequestApi,
+  git: GitClient = new ProcessGitClient(),
+): Promise<PullRequestResult> {
+  const eligibility = evaluatePullRequestEligibility(report);
+  if (!eligibility.eligible) return { status: "skipped", reason: eligibility.reason };
+
+  let commitSha: string | undefined;
+  let pushedBranch: string | undefined;
+  try {
+    const [origin, pushOrigin] = await Promise.all([git.originUrl(options.root), git.originPushUrl(options.root)]);
+    if (origin !== repositoryHttpsUrl(options.repository) || pushOrigin !== repositoryHttpsUrl(options.repository)) {
+      return { status: "skipped", reason: "The Git origin changed during the agent run; Guillermo will not publish it." };
+    }
+    if (!await git.isValidBranchName(options.root, options.baseBranch)) {
+      throw new Error(`Invalid Git base branch name: "${options.baseBranch}".`);
+    }
+    if (await authentication.withEnvironment((environment) => git.remoteBranchExists(options.root, options.branch, environment))) {
+      return { status: "skipped", reason: `Remote branch "${options.branch}" already exists; Guillermo will not push an existing branch.` };
+    }
+    const currentBranch = await git.currentBranch(options.root);
+    if (currentBranch !== options.branch) {
+      return { status: "skipped", reason: "The working branch changed during the agent run; Guillermo will not publish it." };
+    }
+    const currentHead = await git.head(options.root);
+    if (currentHead !== options.startingCommit) {
+      return { status: "skipped", reason: "HEAD changed during the agent run; Guillermo will not add another commit." };
+    }
+    const changedPaths = parseChangedPaths(await git.porcelainStatus(options.root));
+    if (changedPaths.length === 0) return { status: "skipped", reason: "No uncommitted files remained to commit." };
+
+    await git.addPaths(options.root, changedPaths, repositoryCommandEnvironment());
+    await git.commit(options.root, deriveCommitMessage(options.task), options.commitAuthor);
+    commitSha = await git.head(options.root);
+    await authentication.withEnvironment((environment) => git.pushBranch(options.root, options.branch, environment));
+    pushedBranch = options.branch;
+    const title = options.title?.trim() || derivePullRequestTitle(options.task);
+    const pullRequestUrl = await api.createPullRequest({
+      repository: options.repository,
+      title,
+      body: `${GENERATED_PR_BODY_PREFIX}${compactTask(options.task, MAX_PR_BODY_TASK_LENGTH)}`,
+      head: options.branch,
+      base: options.baseBranch,
+    });
+    return { status: "created", commitSha, pushedBranch, pullRequestUrl };
+  } catch (error) {
+    return {
+      status: "failed",
+      reason: authentication.redact(commandErrorMessage(error)),
+      commitSha,
+      pushedBranch,
+    };
   }
 }
 

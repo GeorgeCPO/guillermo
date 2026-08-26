@@ -6,6 +6,7 @@ import {
   defaultProcessRunner,
   type ProcessRunner,
 } from "../infrastructure/process/process-runner.js";
+import { repositoryCommandEnvironment } from "../infrastructure/process/safe-environment.js";
 import { resolveRepositoryPath, validatePatch, validateTestCommand } from "./safety.js";
 
 const IGNORED_DIRECTORIES = new Set([".git", "node_modules", "dist", "coverage", ".guillermo"]);
@@ -16,6 +17,8 @@ const MAX_READ_LINE_SPAN = 400;
 const DEFAULT_SEARCH_RESULTS = 100;
 const MAX_SEARCH_RESULTS = 100;
 const MAX_COMPACT_OUTPUT_LENGTH = 12_000;
+const TEST_TIMEOUT_MS = 10 * 60 * 1_000;
+const TEST_MAX_OUTPUT_BYTES = 250_000;
 
 export interface CommandResult {
   exitCode: number;
@@ -33,6 +36,7 @@ export class Repository {
     public readonly root: string,
     private readonly runner: ProcessRunner = defaultProcessRunner,
     private readonly git: GitClient = new ProcessGitClient(runner),
+    private readonly commandEnvironment: Readonly<Record<string, string>> = repositoryCommandEnvironment(),
   ) {}
 
   async assertGitRepository(): Promise<void> {
@@ -182,7 +186,14 @@ export class Repository {
   async runTests(command: string): Promise<CommandResult> {
     const safeCommand = validateTestCommand(command);
     const [program, ...args] = safeCommand.split(/\s+/);
-    const result = await this.runner.run({ executable: program, args, cwd: this.root });
+    const result = await this.runner.run({
+      executable: program,
+      args,
+      cwd: this.root,
+      env: this.commandEnvironment,
+      timeoutMs: TEST_TIMEOUT_MS,
+      maxOutputBytes: TEST_MAX_OUTPUT_BYTES,
+    });
     const errorMessage = result.error?.message ? `\n${result.error.message}` : "";
     return {
       exitCode: result.exitCode ?? 1,

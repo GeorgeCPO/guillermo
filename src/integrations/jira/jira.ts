@@ -67,7 +67,7 @@ export function parseJiraWebhook(payload: unknown, projects: JiraProjectMap): Ji
         eventId: `${issueKey}:comment:${comment.id}`,
         metadata: { issueKey, projectKey },
       },
-      repositoryPath: project.repositoryPath,
+      repository: project.repository,
       baseBranch: project.baseBranch,
       branch: deriveDefaultBranchName(`${issueKey} comment ${comment.id}`),
       task: buildTask(issueKey, summary, description),

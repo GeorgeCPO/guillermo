@@ -42,6 +42,26 @@ test("separate jobs for the same repository execute serially", async () => {
   assert.deepEqual(starts, ["first", "second"]);
 });
 
+test("repository serialization uses a canonical case-insensitive GitHub identity", async () => {
+  const release = deferred<void>();
+  const starts: string[] = [];
+  const logs: JobQueueLogRecord[] = [];
+  const queue = new InProcessJobQueue(async (candidate) => {
+    starts.push(candidate.source.eventId);
+    if (candidate.source.eventId === "first") await release.promise;
+  }, (record) => logs.push(record));
+  const first = job("first");
+  const second = job("second");
+  second.repository = { owner: "ACME", name: "REPO" };
+  await queue.enqueue(first);
+  await queue.enqueue(second);
+  await eventually(() => starts.length === 1);
+  assert.deepEqual(starts, ["first"]);
+  release.resolve();
+  await eventually(() => completed(logs, "second") === 1);
+  assert.deepEqual(starts, ["first", "second"]);
+});
+
 test("jobs for different repositories can start concurrently", async () => {
   const releases = new Map([["first", deferred<void>()], ["second", deferred<void>()]]);
   const starts: string[] = [];
@@ -51,8 +71,8 @@ test("jobs for different repositories can start concurrently", async () => {
     await releases.get(candidate.source.eventId)?.promise;
   }, (record) => logs.push(record));
 
-  assert.equal(await queue.enqueue(job("first", "/repo/one")), "accepted");
-  assert.equal(await queue.enqueue(job("second", "/repo/two")), "accepted");
+  assert.equal(await queue.enqueue(job("first", "one")), "accepted");
+  assert.equal(await queue.enqueue(job("second", "two")), "accepted");
   await eventually(() => starts.length === 2);
   assert.deepEqual(new Set(starts), new Set(["first", "second"]));
 
@@ -66,7 +86,7 @@ test("queue behavior depends on application source metadata rather than Jira job
   const queue = new InProcessJobQueue(async () => ({ outcome: "finished" }), (record) => logs.push(record));
   const codingJob: CodingJob = {
     source: { eventId: "request-1", metadata: { requestId: "external-42" } },
-    repositoryPath: "/repo",
+    repository: { owner: "acme", name: "repo" },
     baseBranch: "main",
     branch: "guillermo/request-1",
     task: "Implement a change",
@@ -101,10 +121,10 @@ test("a failed job is logged and does not block the next job for its repository"
   await eventually(() => logs.filter(({ event, eventId }) => event === "failed" && eventId === "first").length === 2);
 });
 
-function job(eventId: string, repositoryPath = "/repo"): CodingJob {
+function job(eventId: string, repositoryName = "repo"): CodingJob {
   return {
     source: { eventId, metadata: { issueKey: "APP-1", projectKey: "APP" } },
-    repositoryPath,
+    repository: { owner: "acme", name: repositoryName },
     baseBranch: "main",
     branch: `guillermo/${eventId}`,
     task: "task text with issue description and a secret",
