@@ -4,6 +4,12 @@ import {
   type ProcessResult,
   type ProcessRunner,
 } from "../process/process-runner.js";
+import type { GitCommitAuthor } from "../../config/webhook-config.js";
+import { repositoryCommandEnvironment } from "../process/safe-environment.js";
+
+const GIT_NETWORK_TIMEOUT_MS = 5 * 60 * 1_000;
+const GIT_LOCAL_MUTATION_TIMEOUT_MS = 2 * 60 * 1_000;
+const GIT_MAX_OUTPUT_BYTES = 100_000;
 
 export interface GitClient {
   assertRepository(cwd: string): Promise<void>;
@@ -19,12 +25,13 @@ export interface GitClient {
   diff(cwd: string): Promise<string>;
   changedFiles(cwd: string): Promise<string[]>;
   originUrl(cwd: string): Promise<string>;
-  remoteBranchExists(cwd: string, branch: string): Promise<boolean>;
+  originPushUrl(cwd: string): Promise<string>;
+  remoteBranchExists(cwd: string, branch: string, environment?: Readonly<Record<string, string>>): Promise<boolean>;
   currentBranch(cwd: string): Promise<string>;
   porcelainStatus(cwd: string): Promise<string>;
-  addPaths(cwd: string, paths: readonly string[]): Promise<void>;
-  commit(cwd: string, message: string): Promise<void>;
-  pushBranch(cwd: string, branch: string): Promise<void>;
+  addPaths(cwd: string, paths: readonly string[], environment?: Readonly<Record<string, string>>): Promise<void>;
+  commit(cwd: string, message: string, author?: GitCommitAuthor): Promise<void>;
+  pushBranch(cwd: string, branch: string, environment?: Readonly<Record<string, string>>): Promise<void>;
 }
 
 export class ProcessGitClient implements GitClient {
@@ -90,8 +97,12 @@ export class ProcessGitClient implements GitClient {
     return (await this.run(cwd, ["remote", "get-url", "origin"])).stdout.trim();
   }
 
-  async remoteBranchExists(cwd: string, branch: string): Promise<boolean> {
-    const result = await this.execute(cwd, ["ls-remote", "--exit-code", "--heads", "origin", `refs/heads/${branch}`]);
+  async originPushUrl(cwd: string): Promise<string> {
+    return (await this.run(cwd, ["remote", "get-url", "--push", "origin"])).stdout.trim();
+  }
+
+  async remoteBranchExists(cwd: string, branch: string, environment?: Readonly<Record<string, string>>): Promise<boolean> {
+    const result = await this.execute(cwd, ["ls-remote", "--exit-code", "--heads", "origin", `refs/heads/${branch}`], undefined, environment, GIT_NETWORK_TIMEOUT_MS);
     if (result.exitCode === 2) return false;
     assertProcessSuccess(result, "git ls-remote");
     return true;
@@ -105,23 +116,49 @@ export class ProcessGitClient implements GitClient {
     return (await this.run(cwd, ["status", "--porcelain=v1", "-z"])).stdout;
   }
 
-  async addPaths(cwd: string, paths: readonly string[]): Promise<void> {
-    await this.run(cwd, ["add", "--all", "--", ...paths]);
+  async addPaths(cwd: string, paths: readonly string[], environment?: Readonly<Record<string, string>>): Promise<void> {
+    await this.run(cwd, ["add", "--all", "--", ...paths], undefined, environment, environment ? GIT_LOCAL_MUTATION_TIMEOUT_MS : undefined);
   }
 
-  async commit(cwd: string, message: string): Promise<void> {
-    await this.run(cwd, ["commit", "-m", message]);
+  async commit(cwd: string, message: string, author?: GitCommitAuthor): Promise<void> {
+    const environment = author ? {
+      ...repositoryCommandEnvironment(),
+      GIT_AUTHOR_NAME: author.name,
+      GIT_AUTHOR_EMAIL: author.email,
+      GIT_COMMITTER_NAME: author.name,
+      GIT_COMMITTER_EMAIL: author.email,
+    } : undefined;
+    await this.run(cwd, ["commit", "-m", message], undefined, environment, author ? GIT_LOCAL_MUTATION_TIMEOUT_MS : undefined);
   }
 
-  async pushBranch(cwd: string, branch: string): Promise<void> {
-    await this.run(cwd, ["push", "--set-upstream", "origin", branch]);
+  async pushBranch(cwd: string, branch: string, environment?: Readonly<Record<string, string>>): Promise<void> {
+    await this.run(cwd, ["push", ...(environment ? ["--no-verify"] : []), "--set-upstream", "origin", branch], undefined, environment, GIT_NETWORK_TIMEOUT_MS);
   }
 
-  private execute(cwd: string, args: readonly string[], input?: string): Promise<ProcessResult> {
-    return this.runner.run({ executable: "git", args, cwd, ...(input === undefined ? {} : { input }) });
+  private execute(
+    cwd: string,
+    args: readonly string[],
+    input?: string,
+    env?: Readonly<Record<string, string>>,
+    timeoutMs?: number,
+  ): Promise<ProcessResult> {
+    return this.runner.run({
+      executable: "git",
+      args,
+      cwd,
+      ...(input === undefined ? {} : { input }),
+      ...(env === undefined ? {} : { env }),
+      ...(timeoutMs === undefined ? {} : { timeoutMs, maxOutputBytes: GIT_MAX_OUTPUT_BYTES }),
+    });
   }
 
-  private async run(cwd: string, args: readonly string[], input?: string): Promise<ProcessResult> {
-    return assertProcessSuccess(await this.execute(cwd, args, input), `git ${args[0] ?? "command"}`);
+  private async run(
+    cwd: string,
+    args: readonly string[],
+    input?: string,
+    env?: Readonly<Record<string, string>>,
+    timeoutMs?: number,
+  ): Promise<ProcessResult> {
+    return assertProcessSuccess(await this.execute(cwd, args, input, env, timeoutMs), `git ${args[0] ?? "command"}`);
   }
 }

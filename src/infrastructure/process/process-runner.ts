@@ -9,9 +9,11 @@ export interface ProcessRequest {
   input?: string;
   maxOutputBytes?: number;
   signal?: AbortSignal;
+  timeoutMs?: number;
+  env?: Readonly<Record<string, string>>;
 }
 
-export type ProcessErrorKind = "nonzero-exit" | "spawn" | "output-limit" | "cancelled";
+export type ProcessErrorKind = "nonzero-exit" | "spawn" | "output-limit" | "cancelled" | "timeout";
 
 export interface ProcessErrorInfo {
   kind: ProcessErrorKind;
@@ -55,6 +57,8 @@ export class ExecaProcessRunner implements ProcessRunner {
         reject: false,
         shell: false,
         signal: request.signal,
+        timeout: request.timeoutMs,
+        ...(request.env ? { env: request.env, extendEnv: false } : {}),
         stripFinalNewline: false,
       });
       const stdout = boundOutput(asText(result.stdout), maxOutputBytes);
@@ -69,15 +73,8 @@ export class ExecaProcessRunner implements ProcessRunner {
         : undefined;
       return { exitCode, stdout, stderr, ...(error ? { error } : {}) };
     } catch (error) {
-      return {
-        exitCode: null,
-        stdout: "",
-        stderr: "",
-        error: {
-          kind: "spawn",
-          message: error instanceof Error ? error.message : String(error),
-        },
-      };
+      const failure = processFailure(error, maxOutputBytes, request.signal?.aborted === true);
+      return { exitCode: failure.exitCode, stdout: failure.stdout, stderr: failure.stderr, error: failure.error };
     }
   }
 }
@@ -97,8 +94,40 @@ function normalizeErrorKind(result: {
   timedOut?: boolean;
 }): ProcessErrorKind {
   if (result.isMaxBuffer) return "output-limit";
-  if (result.isCanceled || result.timedOut) return "cancelled";
+  if (result.timedOut) return "timeout";
+  if (result.isCanceled) return "cancelled";
   return typeof result.exitCode === "number" ? "nonzero-exit" : "spawn";
+}
+
+function processFailure(error: unknown, maxOutputBytes: number, signalAborted: boolean): ProcessResult {
+  if (!isProcessLikeError(error)) {
+    return { exitCode: null, stdout: "", stderr: "", error: { kind: "spawn", message: String(error) } };
+  }
+  const stdout = boundOutput(asText(error.stdout), maxOutputBytes);
+  const stderr = boundOutput(asText(error.stderr), maxOutputBytes);
+  return {
+    exitCode: typeof error.exitCode === "number" ? error.exitCode : null,
+    stdout,
+    stderr,
+    error: {
+      kind: signalAborted || error.name === "AbortError" || error.code === "ABORT_ERR" ? "cancelled" : normalizeErrorKind(error),
+      message: error.shortMessage || error.message || "Process failed",
+      ...(typeof error.code === "string" ? { code: error.code } : {}),
+    },
+  };
+}
+
+function isProcessLikeError(error: unknown): error is Error & {
+  exitCode?: number;
+  stdout?: unknown;
+  stderr?: unknown;
+  shortMessage?: string;
+  code?: string;
+  isMaxBuffer?: boolean;
+  isCanceled?: boolean;
+  timedOut?: boolean;
+} {
+  return error instanceof Error;
 }
 
 function asText(output: unknown): string {

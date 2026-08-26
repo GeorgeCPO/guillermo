@@ -4,7 +4,7 @@ import { parseJiraWebhook, parseProjectMap } from "../../src/integrations/jira/j
 
 const projects = parseProjectMap(JSON.stringify({
   APP: {
-    repositoryPath: "/srv/repos/app",
+    repository: "my-org/app",
     baseBranch: "main",
     prTitleFormat: "[{issueKey}] {summary}",
   },
@@ -26,21 +26,23 @@ function payload(overrides: Record<string, unknown> = {}): Record<string, unknow
   };
 }
 
-test("project configuration requires trusted absolute paths, branches, and title placeholders", () => {
+test("project configuration requires trusted remote repositories, branches, and title placeholders", () => {
   assert.throws(() => parseProjectMap("not json"), /valid JSON/);
   assert.throws(() => parseProjectMap("{}"), /non-empty/);
-  assert.throws(() => parseProjectMap(JSON.stringify({ APP: { repositoryPath: "relative", baseBranch: "main" } })), /absolute/);
-  assert.throws(() => parseProjectMap(JSON.stringify({ APP: { repositoryPath: "/repo", baseBranch: "" } })), /baseBranch/);
-  assert.throws(() => parseProjectMap(JSON.stringify({ APP: { repositoryPath: "/repo", baseBranch: "main branch" } })), /baseBranch/);
-  assert.throws(() => parseProjectMap(JSON.stringify({ APP: { repositoryPath: "/repo", baseBranch: "main", prTitleFormat: "{unknown}" } })), /prTitleFormat/);
+  for (const repository of ["relative", "/repo", "https://github.com/org/repo", "org/repo.git", "org/repo/extra", "org;echo/repo", "org/repo?token=x", "user@host:repo"]) {
+    assert.throws(() => parseProjectMap(JSON.stringify({ APP: { repository, baseBranch: "main" } })), /owner\/name/);
+  }
+  assert.throws(() => parseProjectMap(JSON.stringify({ APP: { repository: "org/repo", baseBranch: "" } })), /baseBranch/);
+  assert.throws(() => parseProjectMap(JSON.stringify({ APP: { repository: "org/repo", baseBranch: "main branch" } })), /baseBranch/);
+  assert.throws(() => parseProjectMap(JSON.stringify({ APP: { repository: "org/repo", baseBranch: "main", prTitleFormat: "{unknown}" } })), /prTitleFormat/);
 });
 
 test("project configuration rejects malformed nested values", () => {
   assert.throws(() => parseProjectMap("[]"), /non-empty object/);
   assert.throws(() => parseProjectMap(JSON.stringify({ APP: null })), /object value/);
-  assert.throws(() => parseProjectMap(JSON.stringify({ APP: { repositoryPath: 42, baseBranch: "main" } })), /repositoryPath/);
-  assert.throws(() => parseProjectMap(JSON.stringify({ APP: { repositoryPath: "/repo", baseBranch: ["main"] } })), /baseBranch/);
-  assert.throws(() => parseProjectMap(JSON.stringify({ APP: { repositoryPath: "/repo", baseBranch: "main", prTitleFormat: false } })), /prTitleFormat/);
+  assert.throws(() => parseProjectMap(JSON.stringify({ APP: { repository: 42, baseBranch: "main" } })), /repository/);
+  assert.throws(() => parseProjectMap(JSON.stringify({ APP: { repository: "org/repo", baseBranch: ["main"] } })), /baseBranch/);
+  assert.throws(() => parseProjectMap(JSON.stringify({ APP: { repository: "org/repo", baseBranch: "main", prTitleFormat: false } })), /prTitleFormat/);
 });
 
 test("the exact comment command creates a bounded task from trusted issue fields", () => {
@@ -52,7 +54,7 @@ test("the exact comment command creates a bounded task from trusted issue fields
       eventId: "APP-42:comment:9001",
       metadata: { issueKey: "APP-42", projectKey: "APP" },
     },
-    repositoryPath: "/srv/repos/app",
+    repository: { owner: "my-org", name: "app" },
     baseBranch: "main",
     branch: "guillermo/app-42-comment-9001",
     task: "Implement the requested change for Jira issue APP-42: Handle encoded URLs\n\nIssue description:\nPreserve query strings while decoding paths.",
@@ -60,12 +62,12 @@ test("the exact comment command creates a bounded task from trusted issue fields
   });
 });
 
-test("repository, branch, and title values in the webhook payload are ignored", () => {
-  const candidate = payload({ repositoryPath: "/tmp/attacker", baseBranch: "attacker", prTitleFormat: "attacker" });
+test("repository, clone URL, branch, and title values in the webhook payload are ignored", () => {
+  const candidate = payload({ repository: "attacker/repo", cloneUrl: "https://evil.test/repo", repositoryPath: "/tmp/attacker", baseBranch: "attacker", prTitleFormat: "attacker" });
   const result = parseJiraWebhook(candidate, projects);
   assert.equal(result.kind, "accepted");
   if (result.kind !== "accepted") return;
-  assert.equal(result.job.repositoryPath, "/srv/repos/app");
+  assert.deepEqual(result.job.repository, { owner: "my-org", name: "app" });
   assert.equal(result.job.baseBranch, "main");
   assert.equal(result.job.prTitle, "[APP-42] Handle encoded URLs");
 });

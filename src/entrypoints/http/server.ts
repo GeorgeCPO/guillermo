@@ -77,7 +77,9 @@ function rejectionFor(error: unknown): { status: number; reason: string } {
   const code = error instanceof Error && "code" in error ? error.code : undefined;
   if (code === "FST_ERR_CTP_BODY_TOO_LARGE") return { status: 413, reason: "payload_too_large" };
   if (code === "FST_ERR_CTP_EMPTY_JSON_BODY") return { status: 400, reason: "empty_payload" };
-  if (code === "FST_ERR_CTP_INVALID_JSON_BODY") return { status: 400, reason: "invalid_json" };
+  if (code === "FST_ERR_CTP_INVALID_JSON_BODY") {
+    return { status: 400, reason: "invalid_json" }
+  };
   if (code === "FST_ERR_CTP_INVALID_MEDIA_TYPE") return { status: 415, reason: "content_type_not_json" };
   const statusCode = error instanceof Error && "statusCode" in error && typeof error.statusCode === "number"
     ? error.statusCode

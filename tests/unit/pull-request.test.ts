@@ -3,12 +3,14 @@ import test from "node:test";
 import type { AgentReport } from "../../src/agent/agent.js";
 import {
   createPullRequest,
+  createRemotePullRequest,
   deriveCommitMessage,
   derivePullRequestTitle,
   evaluatePullRequestEligibility,
   parseChangedPaths,
 } from "../../src/integrations/github/pull-request.js";
 import type { ProcessRunner } from "../../src/infrastructure/process/process-runner.js";
+import { ProcessGitClient } from "../../src/infrastructure/git/git-client.js";
 
 function report(overrides: Partial<AgentReport> = {}): AgentReport {
   return {
@@ -177,4 +179,67 @@ test("status parsing retains both sides of a rename for precise staging", () => 
   assert.deepEqual(parseChangedPaths("R  src/new.ts\0src/old.ts\0"), ["src/new.ts", "src/old.ts"]);
   assert.equal(deriveCommitMessage("A task"), "Guillermo: A task");
   assert.equal(derivePullRequestTitle("A task"), "Guillermo: A task");
+});
+
+test("remote publishing uses credential-scoped Git and the REST API without gh or token arguments", async () => {
+  const calls: Array<{ executable: string; args: readonly string[]; env?: Readonly<Record<string, string>> }> = [];
+  let heads = 0;
+  const runner: ProcessRunner = { run: async (request) => {
+    calls.push({ executable: request.executable, args: request.args, env: request.env });
+    if (request.args[0] === "remote") return { exitCode: 0, stdout: "https://github.com/my-org/app.git\n", stderr: "" };
+    if (request.args[0] === "ls-remote") return { exitCode: 2, stdout: "", stderr: "absent" };
+    if (request.args[0] === "branch") return { exitCode: 0, stdout: "guillermo/app-42\n", stderr: "" };
+    if (request.args[0] === "status") return { exitCode: 0, stdout: " M src/app.ts\0", stderr: "" };
+    if (request.args[0] === "rev-parse") return { exitCode: 0, stdout: `${++heads === 1 ? "base123" : "commit456"}\n`, stderr: "" };
+    return { exitCode: 0, stdout: "", stderr: "" };
+  } };
+  const apiCalls: unknown[] = [];
+  const authentication = {
+    withEnvironment: async <T>(operation: (environment: Readonly<Record<string, string>>) => Promise<T>) => operation({ PATH: "/bin", GIT_ASKPASS: "/tmp/askpass", GUILLERMO_GIT_PASSWORD: "installation-token" }),
+    redact: (value: string) => value.replaceAll("installation-token", "[REDACTED]"),
+  };
+  const result = await createRemotePullRequest(report(), {
+    root: "/repo",
+    task: "Fix APP-42",
+    branch: "guillermo/app-42",
+    startingCommit: "base123",
+    baseBranch: "main",
+    repository: { owner: "my-org", name: "app" },
+    commitAuthor: { name: "Guillermo Bot", email: "bot@example.test" },
+  }, authentication, {
+    createPullRequest: async (input) => { apiCalls.push(input); return "https://github.com/my-org/app/pull/42"; },
+  }, new ProcessGitClient(runner));
+
+  assert.deepEqual(result, {
+    status: "created", commitSha: "commit456", pushedBranch: "guillermo/app-42", pullRequestUrl: "https://github.com/my-org/app/pull/42",
+  });
+  assert.equal(calls.some(({ executable }) => executable === "gh"), false);
+  assert.doesNotMatch(JSON.stringify(calls.map(({ args }) => args)), /installation-token|x-access-token/);
+  const authenticated = calls.filter(({ env }) => env?.GUILLERMO_GIT_PASSWORD);
+  assert.deepEqual(authenticated.map(({ args }) => args[0]), ["ls-remote", "push"]);
+  const commit = calls.find(({ args }) => args[0] === "commit");
+  assert.equal(commit?.env?.GIT_AUTHOR_NAME, "Guillermo Bot");
+  assert.equal(commit?.env?.GUILLERMO_GIT_PASSWORD, undefined);
+  assert.deepEqual(apiCalls, [{
+    repository: { owner: "my-org", name: "app" },
+    title: "Guillermo: Fix APP-42",
+    body: "Created by Guillermo for: Fix APP-42",
+    head: "guillermo/app-42",
+    base: "main",
+  }]);
+});
+
+test("remote publishing refuses a changed origin before acquiring credentials", async () => {
+  let credentialCalls = 0;
+  const runner: ProcessRunner = { run: async () => ({ exitCode: 0, stdout: "https://evil.test/repo.git\n", stderr: "" }) };
+  const result = await createRemotePullRequest(report(), {
+    root: "/repo", task: "task", branch: "guillermo/task", startingCommit: "base", baseBranch: "main",
+    repository: { owner: "my-org", name: "app" }, commitAuthor: { name: "Bot", email: "bot@example.test" },
+  }, {
+    withEnvironment: async <T>(operation: (environment: Readonly<Record<string, string>>) => Promise<T>) => { credentialCalls += 1; return operation({}); },
+    redact: (value) => value,
+  }, { createPullRequest: async () => "unused" }, new ProcessGitClient(runner));
+  assert.equal(result.status, "skipped");
+  assert.match(result.reason ?? "", /origin changed/);
+  assert.equal(credentialCalls, 0);
 });
