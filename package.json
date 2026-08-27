@@ -14,6 +14,7 @@
     "start:webhooks": "npm start",
     "cli": "tsx src/entrypoints/cli/main.ts",
     "start:cli": "node dist/entrypoints/cli/main.js",
+    "docker:build": "docker build --file Dockerfile.worker --tag guillermo-worker:latest .",
     "test": "npm run clean:test && tsc -p tsconfig.test.json && node --test 'dist-test/tests/**/*.test.js'",
     "check": "tsc -p tsconfig.test.json --noEmit"
   },
