@@ -140,6 +140,19 @@ test("unknown routes return 404 and unsupported Jira methods return 405", async 
   assert.deepEqual(unsupportedMethod.json(), { status: "rejected" });
 });
 
+test("health endpoint returns only minimal non-sensitive status", async (t) => {
+  const { app } = webhookApp(t, fakeQueue());
+  const response = await app.inject({ method: "GET", url: "/healthz" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["cache-control"], "no-store");
+  assert.deepEqual(response.json(), { status: "ok" });
+  assert.doesNotMatch(response.body, /project|docker|workspace|secret|repository|job/i);
+
+  const wrongMethod = await app.inject({ method: "POST", url: "/healthz" });
+  assert.equal(wrongMethod.statusCode, 405);
+});
+
 test("webhook secrets must contain at least 16 bytes", () => {
   assert.throws(
     () => createWebhookApp({ secret: "too-short", projects, queue: fakeQueue(), fastifyLogger: false }),

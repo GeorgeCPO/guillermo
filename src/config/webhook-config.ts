@@ -14,6 +14,7 @@ export interface GitCommitAuthor {
 export interface WebhookRuntimeConfig {
   githubApp: GitHubAppConfig;
   commitAuthor: GitCommitAuthor;
+  workspaceRoot: string;
 }
 
 export function loadWebhookRuntimeConfig(environment: NodeJS.ProcessEnv = process.env): WebhookRuntimeConfig {
@@ -31,7 +32,22 @@ export function loadWebhookRuntimeConfig(environment: NodeJS.ProcessEnv = proces
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     throw new Error("GUILLERMO_GIT_AUTHOR_EMAIL must be a valid email address.");
   }
-  return { githubApp: { appId, installationId, privateKeyPath: path.resolve(privateKeyPath) }, commitAuthor: { name, email } };
+  const workspaceRoot = validatedAbsolutePath(
+    required(environment, "GUILLERMO_WORKSPACE_ROOT"),
+    "GUILLERMO_WORKSPACE_ROOT",
+  );
+  return {
+    githubApp: { appId, installationId, privateKeyPath: path.resolve(privateKeyPath) },
+    commitAuthor: { name, email },
+    workspaceRoot,
+  };
+}
+
+function validatedAbsolutePath(value: string, name: string): string {
+  if (!path.isAbsolute(value) || path.normalize(value) !== value || value === path.parse(value).root || /[,\0\r\n]/.test(value)) {
+    throw new Error(`${name} must be a normalized absolute directory path below the filesystem root without commas or control characters.`);
+  }
+  return value;
 }
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
