@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+set +x
+umask 077
+
+AWS_REGION='${aws_region}'
+COORDINATOR_REPOSITORY_URL='${coordinator_repository_url}'
+WORKER_REPOSITORY_URL='${worker_repository_url}'
+RUNTIME_SECRET_ARN='${runtime_secret_arn}'
+GITHUB_PRIVATE_KEY_SECRET_ARN='${private_key_secret_arn}'
+INITIAL_RELEASE_TAG='${initial_release_tag}'
+
+dnf install -y docker awscli-2 jq git iptables curl
+systemctl enable --now docker
+systemctl enable --now amazon-ssm-agent
+
+if ! getent group guillermo >/dev/null; then
+  groupadd --gid 10001 guillermo
+fi
+if [[ $(getent group guillermo | cut -d: -f3) != 10001 ]]; then
+  echo "Existing guillermo group does not use required GID 10001" >&2
+  exit 1
+fi
+if ! id guillermo >/dev/null 2>&1; then
+  useradd --uid 10001 --gid guillermo --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin guillermo
+fi
+if [[ $(id -u guillermo) != 10001 ]] || [[ $(id -g guillermo) != 10001 ]]; then
+  echo "Existing guillermo user does not use required UID/GID 10001:10001" >&2
+  exit 1
+fi
+usermod --append --groups docker guillermo
+
+install -d -o root -g guillermo -m 0750 /opt/guillermo /etc/guillermo
+install -d -o guillermo -g guillermo -m 0750 /var/lib/guillermo/workspaces
+
+printf '%s' '${compose_base64}' | base64 --decode >/opt/guillermo/compose.yaml
+chown root:root /opt/guillermo/compose.yaml
+chmod 0644 /opt/guillermo/compose.yaml
+printf '%s' '${host_deploy_script_base64}' | base64 --decode >/usr/local/sbin/guillermo-deploy-release
+chown root:root /usr/local/sbin/guillermo-deploy-release
+chmod 0750 /usr/local/sbin/guillermo-deploy-release
+install -d -o root -g root -m 0755 /usr/local/libexec/guillermo
+printf '%s' '${render_runtime_script_base64}' | base64 --decode >/usr/local/libexec/guillermo/render-runtime-env
+chown root:root /usr/local/libexec/guillermo/render-runtime-env
+chmod 0755 /usr/local/libexec/guillermo/render-runtime-env
+
+cat >/etc/guillermo/deployment.conf <<EOF
+AWS_REGION=$AWS_REGION
+COORDINATOR_REPOSITORY_URL=$COORDINATOR_REPOSITORY_URL
+WORKER_REPOSITORY_URL=$WORKER_REPOSITORY_URL
+RUNTIME_SECRET_ARN=$RUNTIME_SECRET_ARN
+GITHUB_PRIVATE_KEY_SECRET_ARN=$GITHUB_PRIVATE_KEY_SECRET_ARN
+EOF
+chown root:root /etc/guillermo/deployment.conf
+chmod 0600 /etc/guillermo/deployment.conf
+
+compose_version=5.4.0
+compose_release_tag=v$compose_version
+machine_arch=$(uname -m)
+case "$machine_arch" in
+  x86_64)
+    compose_asset=docker-compose-linux-x86_64
+    compose_sha256=837fd1d35bf6a494f41b5b5988269a7be79de337cf1a1a6ff0e45ab51bb4e9be
+    ;;
+  aarch64)
+    compose_asset=docker-compose-linux-aarch64
+    compose_sha256=fc5d1371f1ec7987e703da94ede49af3fbfb240b83f22991a98511de7bc4b93b
+    ;;
+  *)
+    echo "Unsupported EC2 architecture: $machine_arch" >&2
+    exit 1
+    ;;
+esac
+compose_plugin=/usr/local/libexec/docker/cli-plugins/docker-compose
+if [[ ! -x $compose_plugin ]] || ! "$compose_plugin" version --short | grep -qx "$compose_version"; then
+  compose_download=$(mktemp)
+  curl --fail --location --silent --show-error \
+    "https://github.com/docker/compose/releases/download/$compose_release_tag/$compose_asset" \
+    --output "$compose_download"
+  echo "$compose_sha256  $compose_download" | sha256sum --check --status
+  install -D -o root -g root -m 0755 "$compose_download" "$compose_plugin"
+  rm -f "$compose_download"
+fi
+docker compose version
+
+cat >/etc/systemd/system/guillermo-imds-block.service <<'EOF'
+[Unit]
+Description=Block Docker containers from EC2 Instance Metadata Service
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c '/usr/sbin/iptables -w -C DOCKER-USER -d 169.254.169.254/32 -j REJECT 2>/dev/null || /usr/sbin/iptables -w -I DOCKER-USER 1 -d 169.254.169.254/32 -j REJECT'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=docker.service
+EOF
+
+cat >/etc/systemd/system/guillermo.service <<'EOF'
+[Unit]
+Description=Guillermo trusted coordinator
+After=docker.service network-online.target guillermo-imds-block.service
+Wants=network-online.target
+Requires=docker.service guillermo-imds-block.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=guillermo
+Group=guillermo
+SupplementaryGroups=docker
+WorkingDirectory=/opt/guillermo
+ExecStart=/usr/bin/docker compose --env-file /etc/guillermo/host.env -f /opt/guillermo/compose.yaml up -d --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file /etc/guillermo/host.env -f /opt/guillermo/compose.yaml down
+TimeoutStartSec=180
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now guillermo-imds-block.service
+systemctl enable guillermo.service
+
+# ECR may still be empty on the first Terraform apply. The later SSM deployment
+# retries this idempotent operation after images have been pushed.
+if ! /usr/local/sbin/guillermo-deploy-release "$INITIAL_RELEASE_TAG"; then
+  echo "Initial Guillermo release is not available yet; run deploy-via-ssm.sh after publishing images." >&2
+fi

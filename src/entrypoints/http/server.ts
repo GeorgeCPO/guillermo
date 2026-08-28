@@ -12,6 +12,7 @@ export type { Logger, LogRecord } from "./routes/jira-webhook-handler.js";
 
 const MAX_BODY_BYTES = 256_000;
 const MIN_WEBHOOK_SECRET_BYTES = 16;
+export const HEALTH_PATH = "/healthz";
 export interface WebhookAppOptions {
   secret: string;
   projects: JiraProjectMap;
@@ -50,6 +51,11 @@ export function createWebhookApp(options: WebhookAppOptions): FastifyInstance {
     logger,
   });
 
+  app.get(HEALTH_PATH, async (_request, reply) => {
+    reply.header("cache-control", "no-store");
+    return { status: "ok" };
+  });
+
   app.setErrorHandler((error, _request, reply) => {
     const rejection = rejectionFor(error);
     logger({ event: "rejected", reason: rejection.reason });
@@ -58,7 +64,7 @@ export function createWebhookApp(options: WebhookAppOptions): FastifyInstance {
 
   app.setNotFoundHandler((request, reply) => {
     const pathname = new URL(request.url, "http://localhost").pathname;
-    if (pathname in handlers) {
+    if (pathname in handlers || pathname === HEALTH_PATH) {
       logger({ event: "rejected", reason: "method_not_allowed" });
       return reply.status(405).send({ status: "rejected" });
     }

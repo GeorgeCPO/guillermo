@@ -4,3 +4,10 @@ dist-test/
 .env
 .guillermo/
 coverage/
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+crash.log
