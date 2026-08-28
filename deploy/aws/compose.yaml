@@ -1,0 +1,60 @@
+name: guillermo
+
+services:
+  coordinator:
+    image: ${GUILLERMO_COORDINATOR_IMAGE:?set an immutable coordinator image reference}
+    container_name: guillermo-coordinator
+    user: "10001:10001"
+    group_add:
+      - "${GUILLERMO_DOCKER_GID:?set the host Docker socket group ID}"
+    env_file:
+      - /etc/guillermo/runtime.env
+    environment:
+      NODE_ENV: production
+      GUILLERMO_WEBHOOK_HOST: 0.0.0.0
+      GUILLERMO_WEBHOOK_PORT: "3000"
+      GUILLERMO_WORKSPACE_ROOT: /var/lib/guillermo/workspaces
+      GUILLERMO_GITHUB_APP_PRIVATE_KEY_PATH: /run/secrets/github-app.pem
+      GUILLERMO_DOCKER_IMAGE: ${GUILLERMO_WORKER_IMAGE:?set an immutable worker image reference}
+      DOCKER_HOST: ${DOCKER_HOST:-unix:///var/run/docker.sock}
+    ports:
+      - "3000:3000"
+    volumes:
+      - type: bind
+        source: /var/lib/guillermo/workspaces
+        target: /var/lib/guillermo/workspaces
+      - type: bind
+        source: /etc/guillermo/github-app.pem
+        target: /run/secrets/github-app.pem
+        read_only: true
+      - type: bind
+        source: ${GUILLERMO_DOCKER_SOCKET_PATH:-/var/run/docker.sock}
+        target: /var/run/docker.sock
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    mem_limit: ${GUILLERMO_COORDINATOR_MEMORY:-2g}
+    cpus: ${GUILLERMO_COORDINATOR_CPUS:-2}
+    pids_limit: ${GUILLERMO_COORDINATOR_PIDS:-512}
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    restart: unless-stopped
+    stop_grace_period: ${GUILLERMO_STOP_GRACE_PERIOD:-35s}

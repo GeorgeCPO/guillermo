@@ -1,0 +1,8 @@
+**
+!Dockerfile.coordinator
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.build.json
+!src
+!src/**

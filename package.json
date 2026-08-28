@@ -15,6 +15,7 @@
     "cli": "tsx src/entrypoints/cli/main.ts",
     "start:cli": "node dist/entrypoints/cli/main.js",
     "docker:build": "docker build --file Dockerfile.worker --tag guillermo-worker:latest .",
+    "docker:build:coordinator": "docker build --file Dockerfile.coordinator --tag guillermo-coordinator:local .",
     "test": "npm run clean:test && tsc -p tsconfig.test.json && node --test 'dist-test/tests/**/*.test.js'",
     "check": "tsc -p tsconfig.test.json --noEmit"
   },

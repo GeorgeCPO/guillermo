@@ -11,6 +11,7 @@ import { ManagedWorkspaceProvider } from "../../application/managed-workspace.js
 import { GitHubAppTokenProvider, GitHubRestApi } from "../../integrations/github/github-app.js";
 import { DockerSandboxProvider } from "../../infrastructure/docker/docker-sandbox.js";
 import { createWebhookApp } from "./server.js";
+import { installShutdownHandlers } from "./shutdown.js";
 
 const DEFAULT_HTTP_PORT = 3000;
 const DEFAULT_HTTP_HOST = "127.0.0.1";
@@ -25,7 +26,7 @@ const webhookConfig = loadWebhookRuntimeConfig();
 const sandboxConfig = loadSandboxConfig();
 const tokenProvider = new GitHubAppTokenProvider(webhookConfig.githubApp);
 const github = new GitHubRestApi(tokenProvider);
-const workspaces = new ManagedWorkspaceProvider(tokenProvider);
+const workspaces = new ManagedWorkspaceProvider(tokenProvider, { temporaryRoot: webhookConfig.workspaceRoot });
 const sandboxes = new DockerSandboxProvider(sandboxConfig);
 const port = parsePort(process.env.GUILLERMO_WEBHOOK_PORT ?? String(DEFAULT_HTTP_PORT));
 const host = process.env.GUILLERMO_WEBHOOK_HOST ?? DEFAULT_HTTP_HOST;
@@ -39,6 +40,7 @@ const queue = new InProcessJobQueue(async (job) => {
 }, (record) => app.log.info(record));
 
 app = createWebhookApp({ secret, projects, queue });
+installShutdownHandlers(app, () => queue.waitForIdle());
 try {
   await app.listen({ port, host });
   app.log.info({ event: "listening", host, port });

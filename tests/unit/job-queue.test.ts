@@ -121,6 +121,20 @@ test("a failed job is logged and does not block the next job for its repository"
   await eventually(() => logs.filter(({ event, eventId }) => event === "failed" && eventId === "first").length === 2);
 });
 
+test("waitForIdle resolves only after all active repository queues drain", async () => {
+  const release = deferred<void>();
+  const queue = new InProcessJobQueue(async () => release.promise, () => undefined);
+  await queue.enqueue(job("active"));
+  let idle = false;
+  const waiting = queue.waitForIdle().then(() => { idle = true; });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(idle, false);
+  release.resolve();
+  await waiting;
+  assert.equal(idle, true);
+  await queue.waitForIdle();
+});
+
 function job(eventId: string, repositoryName = "repo"): CodingJob {
   return {
     source: { eventId, metadata: { issueKey: "APP-1", projectKey: "APP" } },

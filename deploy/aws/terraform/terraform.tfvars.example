@@ -1,0 +1,16 @@
+aws_region           = "eu-central-1"
+vpc_id               = "vpc-0123456789abcdef0"
+alb_public_subnet_ids = ["subnet-aaaa", "subnet-bbbb"]
+ec2_subnet_id         = "subnet-cccc"
+instance_type         = "t3.medium"
+instance_architecture = "x86_64"
+acm_certificate_arn   = "arn:aws:acm:eu-central-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
+dns_name              = "guillermo.example.com"
+route53_hosted_zone_id = "Z0000000000000000000"
+allowed_https_cidrs   = ["0.0.0.0/0"]
+runtime_secret_arn    = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:guillermo/runtime-xxxxxx"
+github_private_key_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:guillermo/github-app-key-xxxxxx"
+secret_kms_key_arns   = []
+ecr_kms_key_arn       = ""
+release_tag           = "0123456789abcdef0123456789abcdef01234567"
+root_volume_size_gib  = 40

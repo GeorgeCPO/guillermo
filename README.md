@@ -46,6 +46,7 @@ GUILLERMO_GITHUB_APP_INSTALLATION_ID=789012
 GUILLERMO_GITHUB_APP_PRIVATE_KEY_PATH=/absolute/path/to/github-app-private-key.pem
 GUILLERMO_GIT_AUTHOR_NAME=Guillermo Bot
 GUILLERMO_GIT_AUTHOR_EMAIL=guillermo-bot@example.com
+GUILLERMO_WORKSPACE_ROOT=/absolute/path/to/guillermo-workspaces
 GUILLERMO_DOCKER_IMAGE=guillermo-worker:latest
 GUILLERMO_DOCKER_MEMORY=1g
 GUILLERMO_DOCKER_CPUS=2
@@ -115,7 +116,13 @@ Install the App on **only selected repositories** when practical. The installati
 
 Set the App ID, installation ID, absolute private-key file path, and commit author values shown above. Protect the key file with host filesystem permissions and rotate it through GitHub when needed. Guillermo signs a short-lived App JWT, requests a short-lived installation token with only `contents: write` and `pull_requests: write`, refreshes it near expiration, and keeps it out of command arguments, remote URLs, persisted Git configuration, logs, errors, and reports.
 
-## Setup
+## AWS single-instance deployment (Stage 10.5)
+
+The production coordinator image, hardened EC2 Compose definition, Terraform infrastructure, Amazon Linux 2023 bootstrap, immutable ECR release scripts, SSM update path, secret contract, and operations guide live in [`deploy/aws`](deploy/aws/RUNBOOK.md). The deployment preserves the Stage 10 split: the trusted coordinator is persistent, while repository-controlled commands run only in separate ephemeral worker containers.
+
+Start with the [Stage 10.5 deployment runbook](deploy/aws/RUNBOOK.md). Terraform never reads secret values, and the provided scripts do not apply infrastructure, publish images, or contact AWS unless an operator runs the documented commands.
+
+## Local setup
 
 ```bash
 npm install
