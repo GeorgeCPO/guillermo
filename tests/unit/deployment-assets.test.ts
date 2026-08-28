@@ -59,6 +59,8 @@ test("Terraform captures the required single-instance security architecture", as
 test("bootstrap blocks container IMDS, provisions restrictive paths, and uses systemd", async () => {
   const bootstrap = await readFile(asset("deploy/aws/terraform/bootstrap.sh.tftpl"), "utf8");
   assert.match(bootstrap, /Amazon Linux 2023|dnf install -y docker/);
+  assert.doesNotMatch(bootstrap, /dnf install[^\n]*\bcurl\b/);
+  assert.match(bootstrap, /command -v curl >\/dev\/null/);
   assert.match(bootstrap, /DOCKER-USER -d 169\.254\.169\.254\/32 -j REJECT/);
   assert.match(bootstrap, /guillermo-imds-block\.service/);
   assert.match(bootstrap, /\/var\/lib\/guillermo\/workspaces/);

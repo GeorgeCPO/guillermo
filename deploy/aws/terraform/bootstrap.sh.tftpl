@@ -10,7 +10,10 @@ RUNTIME_SECRET_ARN='${runtime_secret_arn}'
 GITHUB_PRIVATE_KEY_SECRET_ARN='${private_key_secret_arn}'
 INITIAL_RELEASE_TAG='${initial_release_tag}'
 
-dnf install -y docker awscli-2 jq git iptables curl
+# Amazon Linux 2023 ships curl-minimal, which provides the curl executable.
+# Installing the full curl package conflicts with curl-minimal and aborts cloud-init.
+dnf install -y docker awscli-2 jq git iptables
+command -v curl >/dev/null
 systemctl enable --now docker
 systemctl enable --now amazon-ssm-agent
 
