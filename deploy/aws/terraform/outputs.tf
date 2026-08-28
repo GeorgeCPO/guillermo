@@ -11,3 +11,6 @@ output "load_balancer_arn" { value = aws_lb.this.arn }
 output "target_group_arn" { value = aws_lb_target_group.coordinator.arn }
 output "instance_role_arn" { value = aws_iam_role.instance.arn }
 output "release_tag" { value = var.release_tag }
+output "coordinator_log_group_name" { value = aws_cloudwatch_log_group.coordinator.name }
+output "coordinator_log_group_arn" { value = aws_cloudwatch_log_group.coordinator.arn }
+output "coordinator_log_retention_days" { value = aws_cloudwatch_log_group.coordinator.retention_in_days }

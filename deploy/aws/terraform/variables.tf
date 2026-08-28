@@ -98,6 +98,45 @@ variable "ecr_kms_key_arn" {
   default     = ""
 }
 
+variable "coordinator_log_group_name" {
+  description = "CloudWatch Logs group receiving production coordinator stdout and stderr."
+  type        = string
+  default     = "/guillermo/coordinator"
+  validation {
+    condition     = can(regex("^[.\\-_/#A-Za-z0-9]{1,512}$", var.coordinator_log_group_name))
+    error_message = "coordinator_log_group_name must be a valid CloudWatch Logs group name."
+  }
+}
+
+variable "coordinator_log_retention_days" {
+  description = "Days to retain coordinator events in CloudWatch Logs; 30 balances production troubleshooting and storage cost."
+  type        = number
+  default     = 30
+  validation {
+    condition = contains([
+      1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731,
+      1096, 1827, 2192, 2557, 2922, 3288, 3653,
+    ], var.coordinator_log_retention_days)
+    error_message = "coordinator_log_retention_days must be a retention value supported by CloudWatch Logs."
+  }
+}
+
+variable "coordinator_log_group_skip_destroy" {
+  description = "Preserve the coordinator log group and retained events when Terraform destroys the rest of the stack. Read the runbook before disabling."
+  type        = bool
+  default     = true
+}
+
+variable "cloudwatch_logs_kms_key_arn" {
+  description = "Optional symmetric customer-managed KMS key ARN for CloudWatch Logs; empty uses CloudWatch's AES-256 service-managed encryption."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.cloudwatch_logs_kms_key_arn == "" || can(regex("^arn:[^:]+:kms:[^:]+:[0-9]{12}:key/[0-9A-Fa-f-]+$", var.cloudwatch_logs_kms_key_arn))
+    error_message = "cloudwatch_logs_kms_key_arn must be empty or a KMS key ARN (aliases are not accepted)."
+  }
+}
+
 variable "release_tag" {
   description = "Immutable coordinator/worker release tag, normally a full Git commit SHA. Never use latest."
   type        = string

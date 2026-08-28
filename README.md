@@ -118,7 +118,7 @@ Set the App ID, installation ID, absolute private-key file path, and commit auth
 
 ## AWS single-instance deployment (Stage 10.5)
 
-The production coordinator image, hardened EC2 Compose definition, Terraform infrastructure, Amazon Linux 2023 bootstrap, immutable ECR release scripts, SSM update path, secret contract, and operations guide live in [`deploy/aws`](deploy/aws/RUNBOOK.md). The deployment preserves the Stage 10 split: the trusted coordinator is persistent, while repository-controlled commands run only in separate ephemeral worker containers.
+The production coordinator image, hardened EC2 Compose definition, Terraform infrastructure, Amazon Linux 2023 bootstrap, immutable ECR release scripts, SSM update path, CloudWatch Logs storage, secret contract, and operations guide live in [`deploy/aws`](deploy/aws/RUNBOOK.md). The deployment preserves the Stage 10 split: the trusted coordinator is persistent, while repository-controlled commands run only in separate ephemeral worker containers.
 
 Start with the [Stage 10.5 deployment runbook](deploy/aws/RUNBOOK.md). Terraform never reads secret values, and the provided scripts do not apply infrastructure, publish images, or contact AWS unless an operator runs the documented commands.
 

@@ -8,6 +8,7 @@ COORDINATOR_REPOSITORY_URL='${coordinator_repository_url}'
 WORKER_REPOSITORY_URL='${worker_repository_url}'
 RUNTIME_SECRET_ARN='${runtime_secret_arn}'
 GITHUB_PRIVATE_KEY_SECRET_ARN='${private_key_secret_arn}'
+COORDINATOR_LOG_GROUP_NAME='${coordinator_log_group_name}'
 INITIAL_RELEASE_TAG='${initial_release_tag}'
 
 # Amazon Linux 2023 ships curl-minimal, which provides the curl executable.
@@ -53,6 +54,7 @@ COORDINATOR_REPOSITORY_URL=$COORDINATOR_REPOSITORY_URL
 WORKER_REPOSITORY_URL=$WORKER_REPOSITORY_URL
 RUNTIME_SECRET_ARN=$RUNTIME_SECRET_ARN
 GITHUB_PRIVATE_KEY_SECRET_ARN=$GITHUB_PRIVATE_KEY_SECRET_ARN
+COORDINATOR_LOG_GROUP_NAME=$COORDINATOR_LOG_GROUP_NAME
 EOF
 chown root:root /etc/guillermo/deployment.conf
 chmod 0600 /etc/guillermo/deployment.conf

@@ -35,10 +35,20 @@ test("EC2 Compose runs only the coordinator with host-resolvable workspace and h
     "user: \"10001:10001\"", "source: /var/lib/guillermo/workspaces",
     "target: /var/lib/guillermo/workspaces", "source: /etc/guillermo/github-app.pem",
     "read_only: true", "cap_drop:", "- ALL", "no-new-privileges:true", "init: true",
-    "restart: unless-stopped", "max-size: 10m", "/healthz", "DOCKER_HOST",
+    "restart: unless-stopped", "cache-max-size: 10m", "/healthz", "DOCKER_HOST",
   ]) assert.match(compose, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(compose, /source: \$\{GUILLERMO_DOCKER_SOCKET_PATH:-\/var\/run\/docker\.sock\}/);
   assert.doesNotMatch(compose, /image:\s*[^\n]*latest/);
+  assert.match(compose, /logging:\s*\n\s+driver: awslogs/);
+  assert.match(compose, /awslogs-region: \$\{GUILLERMO_AWS_REGION:\?/);
+  assert.match(compose, /awslogs-group: \$\{GUILLERMO_CLOUDWATCH_LOG_GROUP:\?/);
+  assert.match(compose, /awslogs-stream: \$\{GUILLERMO_CLOUDWATCH_LOG_STREAM:\?/);
+  assert.match(compose, /awslogs-create-group: "false"/);
+  assert.match(compose, /mode: non-blocking/);
+  assert.match(compose, /max-buffer-size: 4m/);
+  assert.match(compose, /cache-disabled: "false"/);
+  assert.match(compose, /cache-max-file: "5"/);
+  assert.doesNotMatch(compose, /awslogs-create-group: "true"|driver: json-file/);
 });
 
 test("Terraform captures the required single-instance security architecture", async () => {
@@ -52,11 +62,22 @@ test("Terraform captures the required single-instance security architecture", as
     "AmazonSSMManagedInstanceCore", "secretsmanager:GetSecretValue", "ecr:BatchGetImage",
     "aws_vpc_security_group_ingress_rule", "referenced_security_group_id", "3000",
     "aws_lb_listener_rule", "fixed-response", "http_request_method", "/webhooks/jira",
-    "ignore_changes = [user_data_base64]",
+    "ignore_changes = [user_data_base64]", "aws_cloudwatch_log_group", "retention_in_days",
+    "kms_key_id", "skip_destroy", "coordinator_log_group_name", "coordinator_log_retention_days",
   ]) assert.match(terraform, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.doesNotMatch(terraform, /from_port\s*=\s*(22|80)|resource "aws_lb_listener" "http_redirect"|secret_value|private_key\s*=/);
+  assert.doesNotMatch(terraform, /from_port\s*=\s*(22|80)|resource "aws_lb_listener" "http_redirect"|secret_value|private_key\s*=|logs:\*/);
   assert.match(terraform, /var\.release_tag != "latest"/);
   assert.doesNotMatch(terraform, /allowed_https_cidrs[\s\S]{0,200}\["0\.0\.0\.0\/0"\]/);
+});
+
+test("CloudWatch logging IAM is limited to coordinator streams in the managed group", async () => {
+  const terraform = await readFile(asset("deploy/aws/terraform/main.tf"), "utf8");
+  const statement = terraform.match(/Sid\s+= "WriteCoordinatorLogs"[\s\S]*?\n\s+}/)?.[0] ?? "";
+  assert.match(statement, /logs:CreateLogStream/);
+  assert.match(statement, /logs:PutLogEvents/);
+  assert.match(statement, /aws_cloudwatch_log_group\.coordinator\.arn}:log-stream:coordinator-\*/);
+  assert.doesNotMatch(statement, /CreateLogGroup|Describe|Resource\s*=\s*"\*"|logs:\*/);
+  assert.match(terraform, /kms:ViaService" = "logs\.\$\{var\.aws_region}\.amazonaws\.com"/);
 });
 
 test("bootstrap blocks container IMDS, provisions restrictive paths, and uses systemd", async () => {
@@ -70,6 +91,8 @@ test("bootstrap blocks container IMDS, provisions restrictive paths, and uses sy
   assert.match(bootstrap, /-o guillermo -g guillermo -m 0750/);
   assert.match(bootstrap, /systemctl enable guillermo\.service/);
   assert.match(bootstrap, /amazon-ssm-agent/);
+  assert.match(bootstrap, /COORDINATOR_LOG_GROUP_NAME='\$\{coordinator_log_group_name}'/);
+  assert.match(bootstrap, /COORDINATOR_LOG_GROUP_NAME=\$COORDINATOR_LOG_GROUP_NAME/);
   assert.doesNotMatch(bootstrap, /set -x|echo .*SECRET|cat .*runtime\.json/);
 });
 
@@ -80,7 +103,10 @@ test("webhook entrypoint wires the validated deployment workspace root into mana
 });
 
 test("release and deployment scripts reject latest and do not put secrets in arguments", async () => {
-  for (const script of ["build-and-push.sh", "deploy-via-ssm.sh", "host-deploy-release.sh", "render-runtime-env.sh"]) {
+  for (const script of [
+    "build-and-push.sh", "deploy-via-ssm.sh", "host-deploy-release.sh", "render-runtime-env.sh",
+    "install-host-assets.sh", "update-host-assets-via-ssm.sh",
+  ]) {
     const location = asset(`deploy/aws/${script}`);
     const mode = (await stat(location)).mode & 0o777;
     assert.notEqual(mode & 0o100, 0, `${script} must be executable`);
@@ -97,9 +123,42 @@ test("release and deployment scripts reject latest and do not put secrets in arg
   assert.match(host, /get-login-password[^\n]*\| docker login[^\n]*--password-stdin/);
   assert.match(host, /get-secret-value[\s\S]*>"\$runtime_response"/);
   assert.doesNotMatch(host, /--secret-string|echo .*OPENAI|echo .*PRIVATE/);
+  assert.match(host, /GUILLERMO_AWS_REGION/);
+  assert.match(host, /GUILLERMO_CLOUDWATCH_LOG_GROUP/);
+  assert.match(host, /GUILLERMO_CLOUDWATCH_LOG_STREAM=coordinator-%s/);
   const renderer = await readFile(asset("deploy/aws/render-runtime-env.sh"), "utf8");
   assert.match(renderer, /GUILLERMO_MAX_STEPS/);
   assert.match(renderer, /\[1-4\]\[0-9\]\|50/);
+});
+
+test("SSM host-asset updater is source-controlled, bounded, and keeps immutable releases", async () => {
+  const updater = await readFile(asset("deploy/aws/update-host-assets-via-ssm.sh"), "utf8");
+  const installer = await readFile(asset("deploy/aws/install-host-assets.sh"), "utf8");
+  for (const expected of [
+    "AWS-RunShellScript", "sha256sum --check --status", "install-host-assets.sh",
+    "COORDINATOR_LOG_GROUP_NAME", "archive_base64", "18000", "set +x", "bash -n <<<",
+  ]) assert.match(updater, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(installer, /mv -f \/opt\/guillermo\/\.compose\.yaml\.new/);
+  assert.match(installer, /grep -v '\^COORDINATOR_LOG_GROUP_NAME='/);
+  assert.match(installer, /guillermo-deploy-release "\$release_tag"/);
+  assert.doesNotMatch(updater + installer, /\{1,512\}/);
+  assert.doesNotMatch(updater + installer, /set -x|SecretString|get-secret-value|runtime\.env/);
+
+  await assert.rejects(execFileAsync(asset("deploy/aws/update-host-assets-via-ssm.sh"), [], {
+    env: {
+      ...process.env,
+      AWS_REGION: "eu-central-1",
+      INSTANCE_ID: "i-006a8c635d7ce0256",
+      RELEASE_TAG: "latest",
+      COORDINATOR_LOG_GROUP_NAME: "/guillermo/coordinator",
+    },
+  }), (error: unknown) => {
+    const output = String((error as { stdout?: string; stderr?: string }).stdout ?? "")
+      + String((error as { stdout?: string; stderr?: string }).stderr ?? "");
+    assert.match(output, /must be immutable/);
+    assert.doesNotMatch(output, /OPENAI_API_KEY|GUILLERMO_JIRA_WEBHOOK_SECRET|PRIVATE KEY/);
+    return true;
+  });
 });
 
 test("secret rendering local simulation emits no secret output", async () => {

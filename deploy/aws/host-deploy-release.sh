@@ -17,6 +17,12 @@ fi
 
 # Contains only identifiers and ARNs, never secret values.
 source /etc/guillermo/deployment.conf
+: "${AWS_REGION:?AWS_REGION is missing from deployment.conf}"
+: "${COORDINATOR_REPOSITORY_URL:?COORDINATOR_REPOSITORY_URL is missing from deployment.conf}"
+: "${WORKER_REPOSITORY_URL:?WORKER_REPOSITORY_URL is missing from deployment.conf}"
+: "${RUNTIME_SECRET_ARN:?RUNTIME_SECRET_ARN is missing from deployment.conf}"
+: "${GITHUB_PRIVATE_KEY_SECRET_ARN:?GITHUB_PRIVATE_KEY_SECRET_ARN is missing from deployment.conf}"
+: "${COORDINATOR_LOG_GROUP_NAME:?COORDINATOR_LOG_GROUP_NAME is missing from deployment.conf; update trusted host assets through SSM first}"
 
 runtime_response=$(mktemp /etc/guillermo/.runtime-response.XXXXXX)
 runtime_json=$(mktemp /etc/guillermo/.runtime-json.XXXXXX)
@@ -58,6 +64,9 @@ worker_image="$WORKER_REPOSITORY_URL:$release_tag"
   printf 'GUILLERMO_DOCKER_GID=%s\n' "$docker_gid"
   printf 'GUILLERMO_DOCKER_SOCKET_PATH=/var/run/docker.sock\n'
   printf 'DOCKER_HOST=unix:///var/run/docker.sock\n'
+  printf 'GUILLERMO_AWS_REGION=%s\n' "$AWS_REGION"
+  printf 'GUILLERMO_CLOUDWATCH_LOG_GROUP=%s\n' "$COORDINATOR_LOG_GROUP_NAME"
+  printf 'GUILLERMO_CLOUDWATCH_LOG_STREAM=coordinator-%s\n' "$release_tag"
 } >"$host_env"
 install -o root -g guillermo -m 0440 "$host_env" /etc/guillermo/host.env
 

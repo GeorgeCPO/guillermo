@@ -9,6 +9,24 @@ locals {
   create_dns  = var.route53_hosted_zone_id != ""
 }
 
+resource "aws_cloudwatch_log_group" "coordinator" {
+  name              = var.coordinator_log_group_name
+  retention_in_days = var.coordinator_log_retention_days
+  kms_key_id        = var.cloudwatch_logs_kms_key_arn == "" ? null : var.cloudwatch_logs_kms_key_arn
+
+  # Production logs normally outlive this single EC2 stack. With the default
+  # true value, destroy removes the group from state but leaves its retained
+  # events in CloudWatch. See RUNBOOK.md before changing this to false.
+  skip_destroy = var.coordinator_log_group_skip_destroy
+
+  tags = {
+    Name               = "guillermo-coordinator"
+    Component          = "coordinator"
+    Environment        = "production"
+    DataClassification = "operational-metadata"
+  }
+}
+
 resource "aws_ecr_repository" "coordinator" {
   name                 = var.coordinator_repository_name
   image_tag_mutability = "IMMUTABLE"
@@ -80,6 +98,12 @@ resource "aws_iam_role_policy" "runtime" {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = local.secret_arns
+      },
+      {
+        Sid      = "WriteCoordinatorLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.coordinator.arn}:log-stream:coordinator-*"
       }
       ], length(var.secret_kms_key_arns) == 0 ? [] : [{
         Sid       = "DecryptConfiguredSecretKeys"
@@ -87,6 +111,14 @@ resource "aws_iam_role_policy" "runtime" {
         Action    = ["kms:Decrypt"]
         Resource  = var.secret_kms_key_arns
         Condition = { StringEquals = { "kms:ViaService" = "secretsmanager.${var.aws_region}.amazonaws.com" } }
+        }], var.cloudwatch_logs_kms_key_arn == "" ? [] : [{
+        Sid      = "UseConfiguredCloudWatchLogsKey"
+        Effect   = "Allow"
+        Action   = ["kms:Encrypt", "kms:ReEncrypt*", "kms:Decrypt", "kms:GenerateDataKey*", "kms:Describe*"]
+        Resource = var.cloudwatch_logs_kms_key_arn
+        Condition = {
+          StringEquals = { "kms:ViaService" = "logs.${var.aws_region}.amazonaws.com" }
+        }
     }])
   })
 }
@@ -237,6 +269,7 @@ resource "aws_instance" "coordinator" {
     worker_repository_url        = aws_ecr_repository.worker.repository_url
     runtime_secret_arn           = var.runtime_secret_arn
     private_key_secret_arn       = var.github_private_key_secret_arn
+    coordinator_log_group_name   = aws_cloudwatch_log_group.coordinator.name
     initial_release_tag          = var.release_tag
     compose_base64               = base64encode(file("${path.module}/../compose.yaml"))
     host_deploy_script_base64    = base64encode(file("${path.module}/../host-deploy-release.sh"))

@@ -1,6 +1,8 @@
-# Guillermo Stage 10.5: single-EC2 deployment runbook
+# Guillermo Stage 10.5: single-EC2 deployment and CloudWatch Logs runbook
 
-This runbook deploys one dedicated Amazon Linux 2023 EC2 host, one persistent trusted coordinator container, and ephemeral worker containers. Terraform creates the EC2, IAM, ECR, ALB, security-group, target-group, and optional Route 53 resources. It does not create or read secret values.
+This runbook deploys one dedicated Amazon Linux 2023 EC2 host, one persistent trusted coordinator container, and ephemeral worker containers. Terraform creates the EC2, IAM, ECR, ALB, security-group, target-group, CloudWatch log group, and optional Route 53 resources. It does not create or read secret values.
+
+The coordinator writes the same sanitized JSON records to stdout/stderr as before. Docker's built-in `awslogs` driver sends those records to CloudWatch Logs. The Docker daemon obtains the narrowly scoped EC2 role credentials on the host; credentials are not injected into the coordinator or workers. The existing container-to-IMDS firewall rule remains in place.
 
 ## 1. Prerequisites and costs
 
@@ -13,7 +15,7 @@ You need:
 - a GitHub App installed only on the repositories Guillermo may change; and
 - Jira Automation, because the Jira webhook request must include a custom secret header.
 
-Costs normally include the continuously running EC2 instance, gp3 EBS volume, Application Load Balancer and LCUs, NAT gateway and data processing if used, public IPv4 if your VPC design uses one, Secrets Manager secrets/API calls, ECR storage/scanning, data transfer, and optional Route 53 hosted-zone/query charges. Review current AWS pricing for the selected region before applying.
+Costs normally include the continuously running EC2 instance, gp3 EBS volume, Application Load Balancer and LCUs, NAT gateway and data processing if used, public IPv4 if your VPC design uses one, Secrets Manager secrets/API calls, ECR storage/scanning, CloudWatch Logs ingestion/storage/query scanning, data transfer, and optional Route 53 hosted-zone/query charges. Review current AWS pricing for the selected region before applying.
 
 The EC2 instance is a dedicated Guillermo host. Docker-socket access lets the coordinator control the host Docker daemon and is effectively host-root authority despite the coordinator's non-root Linux UID.
 
@@ -96,7 +98,13 @@ Set these required inputs:
 - `release_tag` (normally the full Git commit SHA, never `latest`)
 - required `dns_name`; optional `route53_hosted_zone_id` when that name is hosted in Route 53
 - optional exact `secret_kms_key_arns` and `ecr_kms_key_arn`
+- optional `coordinator_log_group_name` (default `/guillermo/coordinator`), `coordinator_log_retention_days` (default `30`), and `coordinator_log_group_skip_destroy` (default `true`);
+- optional `cloudwatch_logs_kms_key_arn`; leave it empty for CloudWatch's server-side AES-256 encryption, which encrypts every log group at rest without another key to operate; and
 - optional ECR repository names, root volume size, and tags.
+
+Thirty days is a sensible starting retention period: it normally covers incident investigation without retaining operational metadata indefinitely. CloudWatch automatically expires older events. Changing retention affects future expiry but does not restart the application.
+
+If your organization requires a customer-managed KMS key, the key must be symmetric, in `eu-central-1`, and its key policy must permit the regional `logs.eu-central-1.amazonaws.com` service principal for this exact log-group encryption context. The EC2 role receives KMS use only for the configured key and only through `logs.eu-central-1.amazonaws.com`. The Terraform operator also needs permission to describe/associate that key. A disabled, deleted, or incorrectly configured key prevents ingestion and can make previously encrypted logs unreadable, so the default service-managed encryption is the lower-maintenance choice for most small deployments.
 
 Then format, initialize, validate, inspect, and apply:
 
@@ -120,6 +128,7 @@ export WORKER_ECR_REPOSITORY_URL=$(terraform output -raw worker_ecr_repository_u
 export INSTANCE_ID=$(terraform output -raw instance_id)
 export HTTPS_ENDPOINT=$(terraform output -raw https_endpoint)
 export RELEASE_TAG=$(terraform output -raw release_tag)
+export COORDINATOR_LOG_GROUP_NAME=$(terraform output -raw coordinator_log_group_name)
 ```
 
 ## 5. Build and publish the immutable release
@@ -148,6 +157,23 @@ export RELEASE_TAG=$(git rev-parse HEAD)
 ```
 
 No SSH connection or key is involved. On reboot, `guillermo.service` starts the already selected release through Docker Compose.
+
+### Updating trusted host assets on an existing instance
+
+Terraform deliberately ignores in-place EC2 `user_data_base64` changes because cloud-init is create-time bootstrap. Therefore, applying the log-group and IAM changes does **not** replace the current instance and does **not** copy the new Compose/scripts onto it. After the Terraform apply succeeds, run the source-controlled asset updater once:
+
+```bash
+cd <repository-root>
+export AWS_REGION=eu-central-1
+export INSTANCE_ID=i-006a8c635d7ce0256
+export RELEASE_TAG=1d3631ddfed6edf40bf2c908cb1096818e75afb9
+export COORDINATOR_LOG_GROUP_NAME=$(cd deploy/aws/terraform && terraform output -raw coordinator_log_group_name)
+./deploy/aws/update-host-assets-via-ssm.sh
+```
+
+The updater packages only four reviewed source files, verifies a SHA-256 checksum on the host, atomically installs them, adds the non-secret log-group name to `/etc/guillermo/deployment.conf`, and invokes the existing immutable release. It refreshes secrets into protected files without printing them, pulls the already-published images, validates Compose, and recreates the coordinator. It does not build or push an image, manually edit a host file, use SSH, change worker mounts/environment, or change Terraform state. Re-running the same command is safe and converges to the same files/release, but it causes another brief coordinator restart.
+
+Infrastructure must be applied first. Otherwise Docker cannot find the Terraform-managed group or use the new IAM permission, and the recreated container might not start. If the command fails, inspect its SSM status and retry after correcting the cause; do not paste secret material into an SSM command.
 
 ## 7. Verify health and configure Jira
 
@@ -179,6 +205,61 @@ Do not put the secret in the URL. A comment whose entire text is `/guillermo` sh
 
 ## 8. Administration and logs
 
+### Find the logs in the AWS console
+
+1. Sign in to the AWS console and select **Frankfurt (`eu-central-1`)** in the region selector.
+2. Open **CloudWatch**.
+3. In the left navigation, choose **Logs** → **Log groups**.
+4. Choose `/guillermo/coordinator` (or the value of Terraform output `coordinator_log_group_name`).
+5. Choose a stream named `coordinator-<immutable-release-tag>`. Each release has a predictable stream, so a rollback returns to its earlier stream.
+
+The log group is independent of the EC2 root disk. Replacing or destroying the instance does not erase ingested CloudWatch events. A replacement coordinator continues into the stream selected by its immutable release tag. There may be a short gap for lines that were still buffered locally when the old instance disappeared.
+
+### View, follow, and filter with the AWS CLI
+
+These commands use your operator's AWS CLI identity, not the EC2 role. That identity needs read-only CloudWatch Logs permissions.
+
+```bash
+export AWS_REGION=eu-central-1
+export LOG_GROUP=/guillermo/coordinator
+
+# Recent records, oldest to newest.
+aws logs tail "$LOG_GROUP" --region "$AWS_REGION" --since 1h --format short
+
+# Follow new records until Ctrl-C.
+aws logs tail "$LOG_GROUP" --region "$AWS_REGION" --since 10m --follow --format short
+```
+
+To select lifecycle records from the last 24 hours:
+
+```bash
+START_MS=$(( ($(date +%s) - 86400) * 1000 ))
+aws logs filter-log-events \
+  --region "$AWS_REGION" \
+  --log-group-name "$LOG_GROUP" \
+  --start-time "$START_MS" \
+  --filter-pattern '{ $.event = "accepted" || $.event = "started" || $.event = "completed" || $.event = "failed" || $.outcome = "skipped" }' \
+  --query 'events[].message' \
+  --output text
+```
+
+`accepted`, `started`, `completed`, and `failed` are event values. A skipped publication currently appears as a `completed` job whose `outcome` is `skipped`; this stage does not change or expand skip-reason logging. In **CloudWatch Logs Insights**, select the log group and use:
+
+```text
+fields @timestamp, event, issueKey, projectKey, outcome, errorType
+| filter event in ["accepted", "started", "completed", "failed"] or outcome = "skipped"
+| sort @timestamp desc
+| limit 200
+```
+
+Application request logging remains disabled. Logs contain the existing sanitized structured records, not webhook bodies, request secret headers, API keys, installation tokens, private keys, Secrets Manager responses, environment dumps, or worker environments. Still treat issue/repository identifiers and failure metadata as sensitive operational data.
+
+### Local troubleshooting cache and outage behavior
+
+The `awslogs` driver uses non-blocking delivery with a bounded 4 MB in-memory buffer. A slow or unavailable CloudWatch endpoint therefore cannot block the running Node process. When the buffer fills, Docker drops newer log records rather than stopping the coordinator. Docker dual logging also keeps a compressed, rotating local cache (at most five 10 MB files before compression), so `docker logs` remains useful during ordinary troubleshooting. The local cache is not a durable second copy and can also miss records during remote/network failures.
+
+Stream creation is permitted only under this Terraform-managed group and only with the `coordinator-` prefix. Docker is explicitly forbidden from creating log groups. At container creation time the driver must reach CloudWatch to create or reconnect to the stream; if CloudWatch, DNS, NAT, or IAM is unavailable at that moment, the container start can fail. The application is not crashed—it has not started. Restore connectivity/permissions and rerun the idempotent SSM deployment.
+
 Start an authenticated Session Manager shell:
 
 ```bash
@@ -194,6 +275,8 @@ sudo systemctl status guillermo guillermo-imds-block docker amazon-ssm-agent
 sudo journalctl -u guillermo -n 200 --no-pager
 sudo -u guillermo docker compose --env-file /etc/guillermo/host.env -f /opt/guillermo/compose.yaml ps
 sudo docker logs --tail 200 guillermo-coordinator
+sudo docker inspect --format '{{json .HostConfig.LogConfig}}' guillermo-coordinator
+sudo journalctl -u docker -n 200 --no-pager
 sudo iptables -w -C DOCKER-USER -d 169.254.169.254/32 -j REJECT
 ```
 
@@ -204,6 +287,20 @@ Restart without changing the release:
 ```bash
 sudo systemctl restart guillermo
 ```
+
+If CloudWatch logs are missing:
+
+1. Confirm the Terraform apply created the group and updated the instance role: `terraform state show aws_cloudwatch_log_group.coordinator` and `terraform state show aws_iam_role_policy.runtime`.
+2. Confirm the exact region/group/stream options with the `docker inspect` command above. `awslogs-create-group` must be `false`, and the stream must begin `coordinator-`.
+3. Confirm the coordinator is healthy and emitting records. Quiet periods legitimately produce no events.
+4. Check `sudo journalctl -u docker` for `AccessDenied`, missing group, DNS, endpoint, NAT, or throttling errors. Never paste an environment dump or secret response into a ticket.
+5. Confirm private-subnet egress reaches the regional CloudWatch Logs endpoint (`logs.eu-central-1.amazonaws.com`), either through the existing NAT path or a correctly secured `com.amazonaws.eu-central-1.logs` interface VPC endpoint.
+6. For a customer-managed key, confirm it is enabled and both its policy and the conditional EC2 role permissions allow use through CloudWatch Logs for this group.
+7. Retry `deploy-via-ssm.sh` with the same immutable release after repairing the issue. A full log backfill is not possible for records dropped after the bounded buffer filled.
+
+### Retention and cost
+
+The default `30`-day retention automatically removes older events. `coordinator_log_group_skip_destroy = true` does not override retention; it protects the group from stack destruction, not routine expiry. Longer retention increases stored bytes. CloudWatch Logs normally charges for ingestion and retained storage, and Logs Insights charges by data scanned; private-subnet traffic through a NAT gateway can add NAT processing charges. Sanitized low-volume coordinator logs should be modest, but failures or noisy dependencies can increase volume. Review the CloudWatch billing dashboard and current `eu-central-1` pricing before lengthening retention. This change intentionally adds no alarms, exports, subscriptions, or durable job storage.
 
 ## 9. Update and roll back
 
@@ -267,6 +364,14 @@ terraform apply destroy.tfplan
 
 **Warning:** destroying infrastructure can remove the EC2 instance, its root EBS volume, load balancer, networking rules, IAM resources, DNS record, and other data. ECR has `force_delete = false`, so non-empty repositories deliberately block deletion until images are explicitly removed. The externally created Secrets Manager secrets are not Terraform-managed and remain until you deliberately delete them.
 
+By default, `coordinator_log_group_skip_destroy = true`: Terraform removes the log group from state during destroy but deliberately leaves the group and retained events in CloudWatch. It then becomes an untracked AWS resource and continues to incur storage charges until retention removes its events or you deliberately manage/delete it. Before recreating the stack with the same group name, import it back into state:
+
+```bash
+terraform import aws_cloudwatch_log_group.coordinator /guillermo/coordinator
+```
+
+If you truly intend a future destroy to delete all CloudWatch coordinator logs, set `coordinator_log_group_skip_destroy = false`, review and apply that configuration change **before** creating the destroy plan, and verify the destroy plan lists the log group. Deletion is irreversible. A customer-managed KMS key is external and is never deleted by this Terraform module, but disabling/deleting it can make retained encrypted logs unreadable.
+
 ## Security and disaster-recovery limits before Stage 11
 
 - The coordinator's Docker-socket authority requires a dedicated host. Do not co-locate unrelated workloads.
@@ -278,4 +383,5 @@ terraform apply destroy.tfplan
 - Graceful shutdown stops HTTP and waits at most 30 seconds for in-process work. Remaining jobs are terminated and not recovered. ALB deregistration delay does not make jobs durable.
 - Broad outbound instance egress is required by the current design. Add explicit egress controls in a later hardening stage if your dependency and API endpoints can be enumerated.
 - Secrets are refreshed only during deployment/update, not continuously. Rotation requires rerunning the SSM deployment command.
+- CloudWatch delivery is best effort during outages: non-blocking buffering protects coordinator availability but can drop logs after 4 MB, and the local troubleshooting cache is not an instance-independent backup.
 - The ALB has no WAF or application rate limiting. Webhook authentication remains the random shared header over HTTPS.

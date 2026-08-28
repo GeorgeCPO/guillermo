@@ -52,9 +52,17 @@ services:
       retries: 3
       start_period: 20s
     logging:
-      driver: json-file
+      driver: awslogs
       options:
-        max-size: 10m
-        max-file: "5"
+        awslogs-region: ${GUILLERMO_AWS_REGION:?set the CloudWatch Logs region}
+        awslogs-group: ${GUILLERMO_CLOUDWATCH_LOG_GROUP:?set the Terraform-managed CloudWatch log group}
+        awslogs-stream: ${GUILLERMO_CLOUDWATCH_LOG_STREAM:?set the coordinator log stream}
+        awslogs-create-group: "false"
+        mode: non-blocking
+        max-buffer-size: 4m
+        cache-disabled: "false"
+        cache-max-size: 10m
+        cache-max-file: "5"
+        cache-compress: "true"
     restart: unless-stopped
     stop_grace_period: ${GUILLERMO_STOP_GRACE_PERIOD:-35s}
