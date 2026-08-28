@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AgentReport } from "../../src/agent/agent.js";
+import { AgentExecutionError, type AgentReport } from "../../src/agent/agent.js";
 import {
   runGuillermo,
   type RunGuillermoDependencies,
@@ -13,6 +13,7 @@ const config: GuillermoConfig = { apiKey: "test-key", model: "test-model", maxSt
 const finishedReport: AgentReport = {
   summary: "Implemented the task.",
   termination: "finished",
+  stepsUsed: 2,
   changedFiles: ["src/example.ts"],
   diff: "example diff",
   testRuns: [{ command: "npm test", result: { exitCode: 0, output: "ok" } }],
@@ -85,16 +86,21 @@ test("turns an agent exception into a failure report and still evaluates publica
     task: "Risky task",
     branch: "guillermo/custom",
   }, dependencies(repository, calls, {
-    runAgent: async () => { throw new TypeError("model unavailable"); },
+    runAgent: async () => { throw new AgentExecutionError(2, new TypeError("model unavailable")); },
     createPullRequest: async (report) => {
       receivedReport = report;
-      return { status: "skipped", reason: "The agent failed before calling finish." };
+      return {
+        status: "skipped",
+        reasonCode: "agent_failed",
+        reason: "The agent failed before calling finish.",
+      };
     },
   }));
 
   assert.deepEqual(receivedReport, {
     summary: "Agent failed: model unavailable",
     termination: "failed",
+    stepsUsed: 2,
     changedFiles: ["src/partial.ts"],
     diff: "partial diff",
     testRuns: [],
@@ -114,7 +120,7 @@ test("preserves the agent failure when collecting the partial diff also fails", 
     runAgent: async () => { throw "agent stopped"; },
     createPullRequest: async (report) => {
       receivedReport = report;
-      return { status: "skipped" };
+      return { status: "skipped", reasonCode: "agent_failed", reason: "Agent failed." };
     },
   }));
 

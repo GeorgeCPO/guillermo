@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { CodingJob } from "../../src/application/coding-job.js";
+import type { JobExecutionResult } from "../../src/application/job-observability.js";
 import { InProcessJobQueue, type JobQueueLogRecord } from "../../src/application/job-queue.js";
 
 test("duplicate active event IDs are rejected and become eligible after completion", async () => {
@@ -10,6 +11,7 @@ test("duplicate active event IDs are rejected and become eligible after completi
   const queue = new InProcessJobQueue(async () => {
     runs += 1;
     if (runs === 1) await firstRun.promise;
+    return createdResult();
   }, (record) => logs.push(record));
 
   assert.equal(await queue.enqueue(job("same")), "accepted");
@@ -30,6 +32,7 @@ test("separate jobs for the same repository execute serially", async () => {
   const queue = new InProcessJobQueue(async (candidate) => {
     starts.push(candidate.source.eventId);
     if (candidate.source.eventId === "first") await firstRun.promise;
+    return createdResult();
   }, (record) => logs.push(record));
 
   assert.equal(await queue.enqueue(job("first")), "accepted");
@@ -49,6 +52,7 @@ test("repository serialization uses a canonical case-insensitive GitHub identity
   const queue = new InProcessJobQueue(async (candidate) => {
     starts.push(candidate.source.eventId);
     if (candidate.source.eventId === "first") await release.promise;
+    return createdResult();
   }, (record) => logs.push(record));
   const first = job("first");
   const second = job("second");
@@ -69,6 +73,7 @@ test("jobs for different repositories can start concurrently", async () => {
   const queue = new InProcessJobQueue(async (candidate) => {
     starts.push(candidate.source.eventId);
     await releases.get(candidate.source.eventId)?.promise;
+    return createdResult();
   }, (record) => logs.push(record));
 
   assert.equal(await queue.enqueue(job("first", "one")), "accepted");
@@ -81,9 +86,14 @@ test("jobs for different repositories can start concurrently", async () => {
   await eventually(() => logs.filter(({ event }) => event === "completed").length === 2);
 });
 
-test("queue behavior depends on application source metadata rather than Jira job fields", async () => {
+test("queue logs only allowlisted correlation metadata rather than arbitrary source or job fields", async () => {
   const logs: JobQueueLogRecord[] = [];
-  const queue = new InProcessJobQueue(async () => ({ outcome: "finished" }), (record) => logs.push(record));
+  const queue = new InProcessJobQueue(async () => ({
+    ...createdResult(),
+    taskText: "RESULT_TASK_PRIVATE",
+    reason: "RESULT_RAW_ERROR_PRIVATE",
+    repositoryUrl: "https://token-private@github.example/private/repository.git",
+  }), (record) => logs.push(record));
   const codingJob: CodingJob = {
     source: { eventId: "request-1", metadata: { requestId: "external-42" } },
     repository: { owner: "acme", name: "repo" },
@@ -94,7 +104,11 @@ test("queue behavior depends on application source metadata rather than Jira job
 
   assert.equal(await queue.enqueue(codingJob), "accepted");
   await eventually(() => completed(logs, "request-1") === 1);
-  assert.deepEqual(logs[0], { event: "started", eventId: "request-1", requestId: "external-42" });
+  assert.deepEqual(logs[0], { event: "started", eventId: "request-1" });
+  assert.doesNotMatch(
+    JSON.stringify(logs),
+    /external-42|Implement a change|acme|repo|guillermo\/request-1|RESULT_TASK_PRIVATE|RESULT_RAW_ERROR_PRIVATE|token-private/,
+  );
 });
 
 test("a failed job is logged and does not block the next job for its repository", async () => {
@@ -102,9 +116,13 @@ test("a failed job is logged and does not block the next job for its repository"
   const logs: JobQueueLogRecord[] = [];
   const queue = new InProcessJobQueue(async (candidate) => {
     starts.push(candidate.source.eventId);
-    if (candidate.source.eventId === "first") throw new TypeError("sensitive task details");
-    return { outcome: "created" };
-  }, (record) => logs.push(record));
+    if (candidate.source.eventId === "first") {
+      const error = new TypeError("sensitive task details and RAW_PRIVATE_ERROR");
+      error.name = "repository-controlled-secret-error-name";
+      throw error;
+    }
+    return createdResult();
+  }, (record) => logs.push(record), clock(100, 135, 200, 260, 300, 320));
 
   assert.equal(await queue.enqueue(job("first")), "accepted");
   assert.equal(await queue.enqueue(job("second")), "accepted");
@@ -112,10 +130,21 @@ test("a failed job is logged and does not block the next job for its repository"
 
   assert.deepEqual(starts, ["first", "second"]);
   assert.deepEqual(logs.find(({ event }) => event === "failed"), {
-    event: "failed", eventId: "first", issueKey: "APP-1", projectKey: "APP", errorType: "TypeError",
+    event: "failed",
+    eventId: "first",
+    issueKey: "APP-1",
+    projectKey: "APP",
+    outcome: "failed",
+    reasonCode: "job_runner_exception",
+    exceptionType: "type_error",
+    durationMs: 35,
   });
-  assert.equal(logs.find(({ event, eventId }) => event === "completed" && eventId === "second")?.outcome, "created");
-  assert.doesNotMatch(JSON.stringify(logs), /task text|issue description|sensitive task details/);
+  const secondCompletion = logs.find(({ event, eventId }) => event === "completed" && eventId === "second");
+  assert.equal(secondCompletion?.event === "completed" ? secondCompletion.outcome : undefined, "created");
+  assert.doesNotMatch(
+    JSON.stringify(logs),
+    /task text|issue description|sensitive task details|RAW_PRIVATE_ERROR|repository-controlled-secret-error-name/,
+  );
 
   assert.equal(await queue.enqueue(job("first")), "accepted");
   await eventually(() => logs.filter(({ event, eventId }) => event === "failed" && eventId === "first").length === 2);
@@ -123,7 +152,7 @@ test("a failed job is logged and does not block the next job for its repository"
 
 test("waitForIdle resolves only after all active repository queues drain", async () => {
   const release = deferred<void>();
-  const queue = new InProcessJobQueue(async () => release.promise, () => undefined);
+  const queue = new InProcessJobQueue(async () => { await release.promise; return createdResult(); }, () => undefined);
   await queue.enqueue(job("active"));
   let idle = false;
   const waiting = queue.waitForIdle().then(() => { idle = true; });
@@ -133,6 +162,47 @@ test("waitForIdle resolves only after all active repository queues drain", async
   await waiting;
   assert.equal(idle, true);
   await queue.waitForIdle();
+});
+
+test("completed records contain diagnostic counts, correlation metadata, and a non-negative integer duration", async () => {
+  const logs: JobQueueLogRecord[] = [];
+  const queue = new InProcessJobQueue(async () => ({
+    outcome: "skipped",
+    reasonCode: "agent_step_limit",
+    agentTermination: "step_limit",
+    agentStepCount: 12,
+    changedFileCount: 3,
+    testRunCount: 2,
+    successfulTestRunCount: 1,
+  }), (record) => logs.push(record), clock(1_000.2, 1_123.6));
+
+  await queue.enqueue(job("APP-1:comment:99"));
+  await queue.waitForIdle();
+
+  assert.deepEqual(logs, [
+    { event: "started", eventId: "APP-1:comment:99", issueKey: "APP-1", projectKey: "APP" },
+    {
+      event: "completed",
+      eventId: "APP-1:comment:99",
+      issueKey: "APP-1",
+      projectKey: "APP",
+      outcome: "skipped",
+      reasonCode: "agent_step_limit",
+      agentTermination: "step_limit",
+      agentStepCount: 12,
+      changedFileCount: 3,
+      testRunCount: 2,
+      successfulTestRunCount: 1,
+      durationMs: 123,
+    },
+  ]);
+  const completion = logs[1];
+  assert.equal(completion.event, "completed");
+  if (completion.event === "completed") {
+    assert.equal(Number.isInteger(completion.durationMs), true);
+    assert.ok(completion.durationMs >= 0);
+  }
+  assert.equal(completed(logs, "APP-1:comment:99"), 1);
 });
 
 function job(eventId: string, repositoryName = "repo"): CodingJob {
@@ -161,4 +231,20 @@ async function eventually(condition: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   assert.fail("Condition was not met in time.");
+}
+
+function createdResult(): JobExecutionResult {
+  return {
+    outcome: "created",
+    agentTermination: "finished",
+    agentStepCount: 4,
+    changedFileCount: 2,
+    testRunCount: 1,
+    successfulTestRunCount: 1,
+  };
+}
+
+function clock(...values: number[]): () => number {
+  let index = 0;
+  return () => values[index++] ?? values.at(-1) ?? 0;
 }

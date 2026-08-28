@@ -31,33 +31,71 @@ export interface RemotePullRequestOptions extends PullRequestOptions {
   commitAuthor: GitCommitAuthor;
 }
 
-export interface PullRequestResult {
-  status: "created" | "skipped" | "failed";
-  reason?: string;
+export type PullRequestSkipReasonCode =
+  | "agent_step_limit"
+  | "agent_failed"
+  | "agent_stopped"
+  | "no_files_changed"
+  | "no_successful_test_run"
+  | "remote_branch_exists"
+  | "working_branch_changed"
+  | "head_changed"
+  | "no_uncommitted_files"
+  | "git_origin_changed";
+
+export type PullRequestFailureReasonCode = "publication_failed";
+export type PullRequestReasonCode = PullRequestSkipReasonCode | PullRequestFailureReasonCode;
+
+interface PullRequestResultMetadata {
   commitSha?: string;
   pushedBranch?: string;
   pullRequestUrl?: string;
 }
 
-export interface PullRequestEligibility {
-  eligible: boolean;
-  reason?: string;
-}
+export type PullRequestResult =
+  | ({ status: "created" } & PullRequestResultMetadata)
+  | ({ status: "skipped"; reasonCode: PullRequestSkipReasonCode; reason: string } & PullRequestResultMetadata)
+  | ({ status: "failed"; reasonCode: PullRequestFailureReasonCode; reason: string } & PullRequestResultMetadata);
+
+export type PullRequestEligibility =
+  | { eligible: true }
+  | { eligible: false; reasonCode: PullRequestSkipReasonCode; reason: string };
 
 export function evaluatePullRequestEligibility(report: AgentReport): PullRequestEligibility {
   if (report.termination !== "finished") {
-    const reason = report.termination === "step_limit"
-      ? "The agent reached its step limit without calling finish."
-      : report.termination === "failed"
-        ? "The agent failed before calling finish."
-        : "The agent stopped without calling finish.";
-    return { eligible: false, reason };
+    if (report.termination === "step_limit") {
+      return {
+        eligible: false,
+        reasonCode: "agent_step_limit",
+        reason: "The agent reached its step limit without calling finish.",
+      };
+    }
+    if (report.termination === "failed") {
+      return {
+        eligible: false,
+        reasonCode: "agent_failed",
+        reason: "The agent failed before calling finish.",
+      };
+    }
+    return {
+      eligible: false,
+      reasonCode: "agent_stopped",
+      reason: "The agent stopped without calling finish.",
+    };
   }
   if (report.changedFiles.length === 0) {
-    return { eligible: false, reason: "The agent finished without changing any files." };
+    return {
+      eligible: false,
+      reasonCode: "no_files_changed",
+      reason: "The agent finished without changing any files.",
+    };
   }
   if (!report.testRuns.some(({ result }) => result.exitCode === 0)) {
-    return { eligible: false, reason: "No run_tests invocation completed successfully." };
+    return {
+      eligible: false,
+      reasonCode: "no_successful_test_run",
+      reason: "No run_tests invocation completed successfully.",
+    };
   }
   return { eligible: true };
 }
@@ -81,7 +119,9 @@ export async function createPullRequest(
   git: GitClient = new ProcessGitClient(runner),
 ): Promise<PullRequestResult> {
   const eligibility = evaluatePullRequestEligibility(report);
-  if (!eligibility.eligible) return { status: "skipped", reason: eligibility.reason };
+  if (!eligibility.eligible) {
+    return { status: "skipped", reasonCode: eligibility.reasonCode, reason: eligibility.reason };
+  }
 
   let commitSha: string | undefined;
   let pushedBranch: string | undefined;
@@ -93,20 +133,36 @@ export async function createPullRequest(
     await runGitHub(runner, options.root, ["auth", "status"]);
 
     if (await git.remoteBranchExists(options.root, options.branch)) {
-      return { status: "skipped", reason: `Remote branch "${options.branch}" already exists; Guillermo will not push an existing branch.` };
+      return {
+        status: "skipped",
+        reasonCode: "remote_branch_exists",
+        reason: `Remote branch "${options.branch}" already exists; Guillermo will not push an existing branch.`,
+      };
     }
 
     const currentBranch = await git.currentBranch(options.root);
     if (currentBranch !== options.branch) {
-      return { status: "skipped", reason: "The working branch changed during the agent run; Guillermo will not publish it." };
+      return {
+        status: "skipped",
+        reasonCode: "working_branch_changed",
+        reason: "The working branch changed during the agent run; Guillermo will not publish it.",
+      };
     }
     const currentHead = await git.head(options.root);
     if (currentHead !== options.startingCommit) {
-      return { status: "skipped", reason: "HEAD changed during the agent run; Guillermo will not add another commit." };
+      return {
+        status: "skipped",
+        reasonCode: "head_changed",
+        reason: "HEAD changed during the agent run; Guillermo will not add another commit.",
+      };
     }
     const changedPaths = parseChangedPaths(await git.porcelainStatus(options.root));
     if (changedPaths.length === 0) {
-      return { status: "skipped", reason: "No uncommitted files remained to commit." };
+      return {
+        status: "skipped",
+        reasonCode: "no_uncommitted_files",
+        reason: "No uncommitted files remained to commit.",
+      };
     }
 
     await git.addPaths(options.root, changedPaths);
@@ -127,7 +183,13 @@ export async function createPullRequest(
 
     return { status: "created", commitSha, pushedBranch, pullRequestUrl };
   } catch (error) {
-    return { status: "failed", reason: commandErrorMessage(error), commitSha, pushedBranch };
+    return {
+      status: "failed",
+      reasonCode: "publication_failed",
+      reason: commandErrorMessage(error),
+      commitSha,
+      pushedBranch,
+    };
   }
 }
 
@@ -140,31 +202,55 @@ export async function createRemotePullRequest(
   git: GitClient = new ProcessGitClient(),
 ): Promise<PullRequestResult> {
   const eligibility = evaluatePullRequestEligibility(report);
-  if (!eligibility.eligible) return { status: "skipped", reason: eligibility.reason };
+  if (!eligibility.eligible) {
+    return { status: "skipped", reasonCode: eligibility.reasonCode, reason: eligibility.reason };
+  }
 
   let commitSha: string | undefined;
   let pushedBranch: string | undefined;
   try {
     const [origin, pushOrigin] = await Promise.all([git.originUrl(options.root), git.originPushUrl(options.root)]);
     if (origin !== repositoryHttpsUrl(options.repository) || pushOrigin !== repositoryHttpsUrl(options.repository)) {
-      return { status: "skipped", reason: "The Git origin changed during the agent run; Guillermo will not publish it." };
+      return {
+        status: "skipped",
+        reasonCode: "git_origin_changed",
+        reason: "The Git origin changed during the agent run; Guillermo will not publish it.",
+      };
     }
     if (!await git.isValidBranchName(options.root, options.baseBranch)) {
       throw new Error(`Invalid Git base branch name: "${options.baseBranch}".`);
     }
     if (await authentication.withEnvironment((environment) => git.remoteBranchExists(options.root, options.branch, environment))) {
-      return { status: "skipped", reason: `Remote branch "${options.branch}" already exists; Guillermo will not push an existing branch.` };
+      return {
+        status: "skipped",
+        reasonCode: "remote_branch_exists",
+        reason: `Remote branch "${options.branch}" already exists; Guillermo will not push an existing branch.`,
+      };
     }
     const currentBranch = await git.currentBranch(options.root);
     if (currentBranch !== options.branch) {
-      return { status: "skipped", reason: "The working branch changed during the agent run; Guillermo will not publish it." };
+      return {
+        status: "skipped",
+        reasonCode: "working_branch_changed",
+        reason: "The working branch changed during the agent run; Guillermo will not publish it.",
+      };
     }
     const currentHead = await git.head(options.root);
     if (currentHead !== options.startingCommit) {
-      return { status: "skipped", reason: "HEAD changed during the agent run; Guillermo will not add another commit." };
+      return {
+        status: "skipped",
+        reasonCode: "head_changed",
+        reason: "HEAD changed during the agent run; Guillermo will not add another commit.",
+      };
     }
     const changedPaths = parseChangedPaths(await git.porcelainStatus(options.root));
-    if (changedPaths.length === 0) return { status: "skipped", reason: "No uncommitted files remained to commit." };
+    if (changedPaths.length === 0) {
+      return {
+        status: "skipped",
+        reasonCode: "no_uncommitted_files",
+        reason: "No uncommitted files remained to commit.",
+      };
+    }
 
     await git.addPaths(options.root, changedPaths, repositoryCommandEnvironment());
     await git.commit(options.root, deriveCommitMessage(options.task), options.commitAuthor);
@@ -183,6 +269,7 @@ export async function createRemotePullRequest(
   } catch (error) {
     return {
       status: "failed",
+      reasonCode: "publication_failed",
       reason: authentication.redact(commandErrorMessage(error)),
       commitSha,
       pushedBranch,

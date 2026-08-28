@@ -5,6 +5,7 @@ import { Repository, type CommandResult } from "../repository/repository.js";
 export interface AgentReport {
   summary: string;
   termination: "finished" | "stopped" | "step_limit" | "failed";
+  stepsUsed: number;
   changedFiles: string[];
   diff: string;
   testRuns: Array<{ command: string; result: CommandResult }>;
@@ -110,68 +111,85 @@ export async function runAgent(config: GuillermoConfig, repository: Repository, 
   let nextInput: OpenAI.Responses.ResponseInput = [{ role: "user", content: task }];
   let summary = "The model stopped without a final summary.";
   let termination: AgentReport["termination"] = "step_limit";
+  let stepsUsed = 0;
 
-  for (let step = 1; step <= config.maxSteps; step += 1) {
-    const response = await client.responses.create({
-      model: config.model,
-      instructions: instructionsFor(repository.root),
-      input: nextInput,
-      previous_response_id: previousResponseId ?? null,
-      tools,
-      parallel_tool_calls: false,
-      // The following request refers to this response via previous_response_id.
-      // Responses used for chaining must remain available to the API.
-      store: true,
-    });
-    previousResponseId = response.id;
+  try {
+    for (let step = 1; step <= config.maxSteps; step += 1) {
+      stepsUsed = step;
+      const response = await client.responses.create({
+        model: config.model,
+        instructions: instructionsFor(repository.root),
+        input: nextInput,
+        previous_response_id: previousResponseId ?? null,
+        tools,
+        parallel_tool_calls: false,
+        // The following request refers to this response via previous_response_id.
+        // Responses used for chaining must remain available to the API.
+        store: true,
+      });
+      previousResponseId = response.id;
 
-    const calls = response.output.filter((item) => item.type === "function_call");
-    if (calls.length === 0) {
-      summary = response.output_text || summary;
-      termination = "stopped";
-      break;
-    }
-
-    const outputs: OpenAI.Responses.ResponseInputItem[] = [];
-    for (const call of calls) {
-      const result = await executeTool(repository, call.name, call.arguments, testRuns);
-      events.push(formatToolEvent(step, call.name, result));
-      if (call.name === "finish" && result.ok) {
-        summary = result.output;
+      const calls = response.output.filter((item) => item.type === "function_call");
+      if (calls.length === 0) {
+        summary = response.output_text || summary;
+        termination = "stopped";
+        break;
       }
-      outputs.push({ type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) });
-      if (call.name === "finish") {
-        if (!result.ok) {
+
+      const outputs: OpenAI.Responses.ResponseInputItem[] = [];
+      for (const call of calls) {
+        const result = await executeTool(repository, call.name, call.arguments, testRuns);
+        events.push(formatToolEvent(step, call.name, result));
+        if (call.name === "finish" && result.ok) {
+          summary = result.output;
+        }
+        outputs.push({ type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) });
+        if (call.name === "finish") {
+          if (!result.ok) {
+            return {
+              summary,
+              termination: "stopped",
+              stepsUsed,
+              changedFiles: await repository.changedFiles(),
+              diff: await repository.diff(),
+              testRuns,
+              events,
+            };
+          }
           return {
             summary,
-            termination: "stopped",
+            termination: "finished",
+            stepsUsed,
             changedFiles: await repository.changedFiles(),
             diff: await repository.diff(),
             testRuns,
             events,
           };
         }
-        return {
-          summary,
-          termination: "finished",
-          changedFiles: await repository.changedFiles(),
-          diff: await repository.diff(),
-          testRuns,
-          events,
-        };
       }
+      nextInput = outputs;
     }
-    nextInput = outputs;
-  }
 
-  return {
-    summary,
-    termination,
-    changedFiles: await repository.changedFiles(),
-    diff: await repository.diff(),
-    testRuns,
-    events,
-  };
+    return {
+      summary,
+      termination,
+      stepsUsed,
+      changedFiles: await repository.changedFiles(),
+      diff: await repository.diff(),
+      testRuns,
+      events,
+    };
+  } catch (error) {
+    throw new AgentExecutionError(stepsUsed, error);
+  }
+}
+
+export class AgentExecutionError extends Error {
+  public override readonly name = "AgentExecutionError";
+
+  public constructor(public readonly stepsUsed: number, cause: unknown) {
+    super(errorMessage(cause), { cause });
+  }
 }
 
 async function executeTool(
@@ -217,6 +235,10 @@ function string(value: unknown): string {
 function number(value: unknown): number {
   if (typeof value !== "number") throw new Error("Tool argument must be a number.");
   return value;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function formatToolEvent(step: number, name: string, result: { ok: boolean; output: string }): string {

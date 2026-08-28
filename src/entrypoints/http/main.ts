@@ -6,6 +6,7 @@ import { loadWebhookRuntimeConfig } from "../../config/webhook-config.js";
 import { loadSandboxConfig } from "../../config/sandbox-config.js";
 import { parseProjectMap } from "../../integrations/jira/jira.js";
 import { InProcessJobQueue } from "../../application/job-queue.js";
+import { summarizeJobExecution } from "../../application/job-observability.js";
 import { runRemoteJob } from "../../application/remote-job.js";
 import { ManagedWorkspaceProvider } from "../../application/managed-workspace.js";
 import { GitHubAppTokenProvider, GitHubRestApi } from "../../integrations/github/github-app.js";
@@ -36,7 +37,7 @@ await sandboxes.assertReady();
 let app: FastifyInstance;
 const queue = new InProcessJobQueue(async (job) => {
   const result = await runRemoteJob(config, job, webhookConfig.commitAuthor, github, workspaces, sandboxes);
-  return { outcome: result.pullRequest.status };
+  return summarizeJobExecution(result);
 }, (record) => app.log.info(record));
 
 app = createWebhookApp({ secret, projects, queue });

@@ -16,6 +16,7 @@ function report(overrides: Partial<AgentReport> = {}): AgentReport {
   return {
     summary: "Done.",
     termination: "finished",
+    stepsUsed: 3,
     changedFiles: [" M src/example.ts"],
     diff: "diff",
     testRuns: [{ command: "npm test", result: { exitCode: 0, output: "ok" } }],
@@ -27,18 +28,27 @@ function report(overrides: Partial<AgentReport> = {}): AgentReport {
 test("pull-request eligibility requires finish, changes, and a passing run_tests result", () => {
   assert.deepEqual(evaluatePullRequestEligibility(report({ termination: "step_limit" })), {
     eligible: false,
+    reasonCode: "agent_step_limit",
     reason: "The agent reached its step limit without calling finish.",
   });
   assert.deepEqual(evaluatePullRequestEligibility(report({ termination: "failed" })), {
     eligible: false,
+    reasonCode: "agent_failed",
     reason: "The agent failed before calling finish.",
+  });
+  assert.deepEqual(evaluatePullRequestEligibility(report({ termination: "stopped" })), {
+    eligible: false,
+    reasonCode: "agent_stopped",
+    reason: "The agent stopped without calling finish.",
   });
   assert.deepEqual(evaluatePullRequestEligibility(report({ changedFiles: [] })), {
     eligible: false,
+    reasonCode: "no_files_changed",
     reason: "The agent finished without changing any files.",
   });
   assert.deepEqual(evaluatePullRequestEligibility(report({ testRuns: [{ command: "npm test", result: { exitCode: 1, output: "failed" } }] })), {
     eligible: false,
+    reasonCode: "no_successful_test_run",
     reason: "No run_tests invocation completed successfully.",
   });
   assert.deepEqual(evaluatePullRequestEligibility(report()), { eligible: true });
@@ -141,6 +151,7 @@ test("an existing remote branch is refused before staging, committing, or pushin
   }, runner);
 
   assert.equal(result.status, "skipped");
+  assert.equal(result.reasonCode, "remote_branch_exists");
   assert.match(result.reason ?? "", /already exists/);
   assert.deepEqual(calls, [
     "git remote get-url origin",
@@ -171,8 +182,72 @@ test("a prior commit during the agent run is refused to preserve a single Guille
   }, runner);
 
   assert.equal(result.status, "skipped");
+  assert.equal(result.reasonCode, "head_changed");
   assert.match(result.reason ?? "", /HEAD changed/);
   assert.equal(calls.some((call) => call.startsWith("git add") || call.startsWith("git commit") || call.startsWith("git push")), false);
+});
+
+test("a changed working branch is classified and refused before reading or staging changes", async () => {
+  const calls: string[] = [];
+  const runner: ProcessRunner = { run: async ({ executable, args }) => {
+    calls.push(`${executable} ${args.join(" ")}`);
+    if (executable === "git" && args[0] === "ls-remote") return { exitCode: 2, stdout: "", stderr: "absent" };
+    if (executable === "git" && args[0] === "branch") return { exitCode: 0, stdout: "task-derived-private-branch\n", stderr: "" };
+    return { exitCode: 0, stdout: "", stderr: "" };
+  } };
+
+  const result = await createPullRequest(report(), {
+    root: "/repo",
+    task: "private task text",
+    branch: "guillermo/expected",
+    startingCommit: "base123",
+    baseBranch: "main",
+  }, runner);
+
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reasonCode, "working_branch_changed");
+  assert.equal(calls.some((call) => call.startsWith("git status") || call.startsWith("git add")), false);
+});
+
+test("an empty porcelain status is classified as no remaining uncommitted files", async () => {
+  const runner: ProcessRunner = { run: async ({ executable, args }) => {
+    if (executable === "git" && args[0] === "ls-remote") return { exitCode: 2, stdout: "", stderr: "absent" };
+    if (executable === "git" && args[0] === "branch") return { exitCode: 0, stdout: "guillermo/expected\n", stderr: "" };
+    if (executable === "git" && args[0] === "rev-parse") return { exitCode: 0, stdout: "base123\n", stderr: "" };
+    return { exitCode: 0, stdout: "", stderr: "" };
+  } };
+
+  const result = await createPullRequest(report(), {
+    root: "/repo",
+    task: "private task text",
+    branch: "guillermo/expected",
+    startingCommit: "base123",
+    baseBranch: "main",
+  }, runner);
+
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reasonCode, "no_uncommitted_files");
+});
+
+test("unclassified publication errors receive the safe general publication code", async () => {
+  const runner: ProcessRunner = {
+    run: async () => ({
+      exitCode: 1,
+      stdout: "",
+      stderr: "RAW_PRIVATE_ERROR token-private /private/repository/file.ts",
+    }),
+  };
+
+  const result = await createPullRequest(report(), {
+    root: "/repo",
+    task: "private task text",
+    branch: "guillermo/private-task",
+    startingCommit: "base123",
+    baseBranch: "main",
+  }, runner);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.reasonCode, "publication_failed");
 });
 
 test("status parsing retains both sides of a rename for precise staging", () => {
@@ -240,6 +315,7 @@ test("remote publishing refuses a changed origin before acquiring credentials", 
     redact: (value) => value,
   }, { createPullRequest: async () => "unused" }, new ProcessGitClient(runner));
   assert.equal(result.status, "skipped");
+  assert.equal(result.reasonCode, "git_origin_changed");
   assert.match(result.reason ?? "", /origin changed/);
   assert.equal(credentialCalls, 0);
 });

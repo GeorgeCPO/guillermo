@@ -215,6 +215,67 @@ Do not put the secret in the URL. A comment whose entire text is `/guillermo` sh
 
 The log group is independent of the EC2 root disk. Replacing or destroying the instance does not erase ingested CloudWatch events. A replacement coordinator continues into the stream selected by its immutable release tag. There may be a short gap for lines that were still buffered locally when the old instance disappeared.
 
+### Job event lifecycle and schema
+
+One accepted job normally produces this sequence:
+
+| Event | Meaning | Terminal? |
+| --- | --- | --- |
+| `accepted` | The authenticated Jira event passed validation and was added to the in-memory queue. The HTTP request has already received `202`. | No |
+| `started` | The job has left the repository queue and its runner is executing. This is Guillermo's running state. | No |
+| `completed` | The runner returned a normal result. Inspect `outcome`: `created`, `skipped`, or `failed`. A skipped or failed publication still completed normally as a job. | Yes |
+| `failed` | The runner threw unexpectedly—for example, workspace preparation failed—instead of returning an agent/publication result. It has `reasonCode: "job_runner_exception"` and no matching `completed` record. | Yes |
+
+`duplicate` means the same event ID was already active, and `rejected` means the request was invalid, unauthenticated, unsupported, or not a trigger. They are request events, not running jobs.
+
+All job lifecycle records contain `eventId` and, for Jira work, `issueKey` and `projectKey`. A `completed` record also contains:
+
+| Field | Meaning |
+| --- | --- |
+| `outcome` | `created`, `skipped`, or `failed` pull-request outcome. |
+| `reasonCode` | Stable machine-readable reason for `skipped` and `failed`; absent for `created`. |
+| `agentTermination` | `finished`, `step_limit`, `stopped`, or `failed`. |
+| `agentStepCount` | Number of model response cycles attempted. This is not a token count. |
+| `changedFileCount` | Number of changed paths reported by the agent. Paths themselves are excluded. |
+| `testRunCount` | Number of `run_tests` calls recorded by the agent. |
+| `successfulTestRunCount` | Test runs whose command exited with code zero. |
+| `durationMs` | Monotonic elapsed time from `started` until the terminal result, rounded to whole milliseconds. Queue waiting time is excluded. |
+
+An unexpected `failed` record has `outcome: "failed"`, `reasonCode: "job_runner_exception"`, a coarse safe `exceptionType` (`type_error`, `range_error`, `error`, or `unknown`), and `durationMs`. It omits agent counters because the runner did not return a trustworthy report. Exception messages and names are not logged.
+
+Reason codes are assigned at the decision that produced the result; Guillermo never infers them by parsing the human-readable CLI reason.
+
+| Reason code | Meaning | First diagnostic action |
+| --- | --- | --- |
+| `agent_step_limit` | The agent used all configured steps without calling `finish`. | Compare `agentStepCount` with `GUILLERMO_MAX_STEPS`; inspect whether the task may be too broad. |
+| `agent_failed` | Agent execution raised an error before finishing. | Look for infrastructure/API availability around the same timestamp; raw errors are intentionally absent. |
+| `agent_stopped` | The model returned without a valid `finish` call. | Retry only after deciding whether the task or model behavior needs adjustment. |
+| `no_files_changed` | The agent finished but reported zero changed files. | Confirm the request actually requires a code change. |
+| `no_successful_test_run` | No recorded `run_tests` call exited successfully. | Compare `testRunCount` and `successfulTestRunCount`; command output is intentionally absent. |
+| `remote_branch_exists` | The configured working branch already exists remotely. | Check for a prior delivery/run of the same Jira event. Guillermo will not overwrite it. |
+| `working_branch_changed` | The checkout was no longer on the branch created for this run. | Treat as a repository safety refusal; inspect the repository's scripts outside production logs. |
+| `head_changed` | `HEAD` moved after Guillermo created the working branch. | Check whether a repository command made a commit; Guillermo refuses to add another. |
+| `no_uncommitted_files` | Changes reported earlier were no longer present when publication began. | Check whether repository tooling reverted, committed, or removed them. |
+| `git_origin_changed` | The managed checkout's fetch or push origin no longer matched the allowlisted repository. | Treat as a safety event and inspect repository setup/scripts; no credentials were acquired for publication. |
+| `publication_failed` | Commit, push, authentication, or GitHub PR creation failed without a safer public classification. | Check GitHub/App availability and permissions. Detailed command/API messages are not in job logs. |
+| `job_runner_exception` | The job runner threw before returning a normal result. | Correlate coordinator/platform logs by timestamp; the next queued job still runs. |
+
+Sanitized examples (Pino also adds fields such as `level`, `time`, `pid`, and `hostname`):
+
+```json
+{"event":"accepted","eventId":"KAN-3:comment:10071","issueKey":"KAN-3","projectKey":"KAN"}
+{"event":"started","eventId":"KAN-3:comment:10071","issueKey":"KAN-3","projectKey":"KAN"}
+{"event":"completed","eventId":"KAN-3:comment:10071","issueKey":"KAN-3","projectKey":"KAN","outcome":"skipped","reasonCode":"agent_step_limit","agentTermination":"step_limit","agentStepCount":20,"changedFileCount":2,"testRunCount":1,"successfulTestRunCount":1,"durationMs":184321}
+```
+
+```json
+{"event":"completed","eventId":"KAN-4:comment:10072","issueKey":"KAN-4","projectKey":"KAN","outcome":"created","agentTermination":"finished","agentStepCount":8,"changedFileCount":4,"testRunCount":2,"successfulTestRunCount":2,"durationMs":92110}
+{"event":"completed","eventId":"KAN-5:comment:10073","issueKey":"KAN-5","projectKey":"KAN","outcome":"failed","reasonCode":"publication_failed","agentTermination":"finished","agentStepCount":9,"changedFileCount":3,"testRunCount":1,"successfulTestRunCount":1,"durationMs":101442}
+{"event":"failed","eventId":"KAN-6:comment:10074","issueKey":"KAN-6","projectKey":"KAN","outcome":"failed","reasonCode":"job_runner_exception","exceptionType":"error","durationMs":812}
+```
+
+There is exactly one terminal job event: `completed` when the runner returns, or `failed` when it throws. Do not expect both for one execution.
+
 ### View, follow, and filter with the AWS CLI
 
 These commands use your operator's AWS CLI identity, not the EC2 role. That identity needs read-only CloudWatch Logs permissions.
@@ -230,7 +291,7 @@ aws logs tail "$LOG_GROUP" --region "$AWS_REGION" --since 1h --format short
 aws logs tail "$LOG_GROUP" --region "$AWS_REGION" --since 10m --follow --format short
 ```
 
-To select lifecycle records from the last 24 hours:
+To fetch the last 24 hours as JSON and filter the embedded application records with `jq`:
 
 ```bash
 START_MS=$(( ($(date +%s) - 86400) * 1000 ))
@@ -238,21 +299,70 @@ aws logs filter-log-events \
   --region "$AWS_REGION" \
   --log-group-name "$LOG_GROUP" \
   --start-time "$START_MS" \
-  --filter-pattern '{ $.event = "accepted" || $.event = "started" || $.event = "completed" || $.event = "failed" || $.outcome = "skipped" }' \
-  --query 'events[].message' \
-  --output text
+  --output json \
+| jq -c '.events[].message | fromjson | select(.event == "accepted" or .event == "started" or .event == "completed" or .event == "failed")'
 ```
 
-`accepted`, `started`, `completed`, and `failed` are event values. A skipped publication currently appears as a `completed` job whose `outcome` is `skipped`; this stage does not change or expand skip-reason logging. In **CloudWatch Logs Insights**, select the log group and use:
+Useful `jq` filters against that same stream are:
+
+```bash
+# Every lifecycle event for one Jira issue.
+sudo docker logs guillermo-coordinator 2>&1 \
+  | jq -Rrc 'fromjson? | select(.issueKey == "KAN-3")'
+
+# One exact webhook delivery/job.
+sudo docker logs guillermo-coordinator 2>&1 \
+  | jq -Rrc 'fromjson? | select(.eventId == "KAN-3:comment:10071")'
+
+# Step-limit and test eligibility skips.
+sudo docker logs guillermo-coordinator 2>&1 \
+  | jq -Rrc 'fromjson? | select(.reasonCode == "agent_step_limit" or .reasonCode == "no_successful_test_run")'
+
+# Publication failures and unexpected runner exceptions.
+sudo docker logs guillermo-coordinator 2>&1 \
+  | jq -Rrc 'fromjson? | select(.reasonCode == "publication_failed" or .reasonCode == "job_runner_exception")'
+```
+
+Run these local-cache commands inside the authenticated Session Manager shell described below. `fromjson?` safely ignores any non-JSON Docker diagnostic lines.
+
+In **CloudWatch Logs Insights**, select the coordinator log group. To inspect recent jobs:
 
 ```text
-fields @timestamp, event, issueKey, projectKey, outcome, errorType
-| filter event in ["accepted", "started", "completed", "failed"] or outcome = "skipped"
+fields @timestamp, event, eventId, issueKey, projectKey, outcome, reasonCode,
+  agentTermination, agentStepCount, changedFileCount, testRunCount,
+  successfulTestRunCount, durationMs, exceptionType
+| filter event in ["accepted", "started", "completed", "failed"]
 | sort @timestamp desc
 | limit 200
 ```
 
-Application request logging remains disabled. Logs contain the existing sanitized structured records, not webhook bodies, request secret headers, API keys, installation tokens, private keys, Secrets Manager responses, environment dumps, or worker environments. Still treat issue/repository identifiers and failure metadata as sensitive operational data.
+Find one issue or exact event:
+
+```text
+fields @timestamp, event, eventId, outcome, reasonCode, agentTermination, agentStepCount,
+  testRunCount, successfulTestRunCount, durationMs
+| filter issueKey = "KAN-3"
+| sort @timestamp asc
+```
+
+```text
+fields @timestamp, event, outcome, reasonCode, agentTermination, agentStepCount,
+  changedFileCount, testRunCount, successfulTestRunCount, durationMs, exceptionType
+| filter eventId = "KAN-3:comment:10071"
+| sort @timestamp asc
+```
+
+Find the main failure classes:
+
+```text
+fields @timestamp, eventId, issueKey, reasonCode, agentStepCount,
+  testRunCount, successfulTestRunCount, durationMs, exceptionType
+| filter reasonCode in ["agent_step_limit", "no_successful_test_run", "publication_failed", "job_runner_exception"]
+| sort @timestamp desc
+| limit 200
+```
+
+Application request logging remains disabled. Logs exclude webhook bodies, issue summaries/descriptions, comments, repository identities and URLs, branches, paths, diffs, test commands/output, prompts/responses, environment variables, secret headers, API keys, private keys, installation tokens, Secrets Manager responses, and arbitrary errors. Pull-request URLs are also excluded. Logs do contain operational Jira metadata (`eventId`, `issueKey`, and `projectKey`), timestamps, counts, and state codes. Treat the log group as sensitive operational data and grant read access accordingly.
 
 ### Local troubleshooting cache and outage behavior
 
@@ -305,6 +415,25 @@ The default `30`-day retention automatically removes older events. `coordinator_
 ## 9. Update and roll back
 
 For an update, commit the desired source, choose that commit SHA as a new release tag, build/push both images, and run `deploy-via-ssm.sh` with the same tag. Coordinator and worker are always deployed as one release pair.
+
+For a code-only release after committing, run these commands from the repository root. Set `TARGET_ARCH=arm64` instead if `instance_architecture` in Terraform is `arm64`. This does not run `terraform apply`, change secrets, or update host assets:
+
+```bash
+cd <repository-root>
+test -z "$(git status --porcelain --untracked-files=normal)"
+
+export AWS_REGION=eu-central-1
+export TARGET_ARCH=x86_64
+export RELEASE_TAG=$(git rev-parse HEAD)
+export COORDINATOR_ECR_REPOSITORY_URL=$(cd deploy/aws/terraform && terraform output -raw coordinator_ecr_repository_url)
+export WORKER_ECR_REPOSITORY_URL=$(cd deploy/aws/terraform && terraform output -raw worker_ecr_repository_url)
+export INSTANCE_ID=$(cd deploy/aws/terraform && terraform output -raw instance_id)
+
+./deploy/aws/build-and-push.sh
+./deploy/aws/deploy-via-ssm.sh
+```
+
+The first script builds and pushes the coordinator and worker images under the full commit SHA. The second tells the existing host to pull that exact immutable pair and recreate the coordinator. Verify target health with the commands in section 7, then trigger a test Jira issue and query its `eventId`. Do not update Terraform's `release_tag` merely to deploy a code-only release; changing infrastructure state is a separate reviewed operation.
 
 Rollback uses an earlier immutable tag already present in both repositories:
 

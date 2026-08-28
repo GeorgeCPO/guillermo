@@ -1,5 +1,5 @@
 import { access, realpath } from "node:fs/promises";
-import { runAgent, type AgentReport } from "../agent/agent.js";
+import { AgentExecutionError, runAgent, type AgentReport } from "../agent/agent.js";
 import type { GuillermoConfig } from "../config/config.js";
 import { deriveDefaultBranchName } from "./branch.js";
 import { createPullRequest, type PullRequestResult } from "../integrations/github/pull-request.js";
@@ -82,7 +82,9 @@ export async function runGuillermo(
 }
 
 async function failedAgentReport(repository: Pick<RunRepository, "changedFiles" | "diff">, error: unknown): Promise<AgentReport> {
-  const failure = error instanceof Error ? error.message : String(error);
+  const failure = error instanceof AgentExecutionError
+    ? error.cause instanceof Error ? error.cause.message : String(error.cause)
+    : error instanceof Error ? error.message : String(error);
   let changedFiles: string[] = [];
   let diff = "Could not read the working-tree diff after the agent failed.";
   try {
@@ -93,6 +95,7 @@ async function failedAgentReport(repository: Pick<RunRepository, "changedFiles" 
   return {
     summary: `Agent failed: ${failure}`,
     termination: "failed",
+    stepsUsed: error instanceof AgentExecutionError ? error.stepsUsed : 0,
     changedFiles,
     diff,
     testRuns: [],

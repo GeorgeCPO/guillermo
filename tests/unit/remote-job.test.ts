@@ -18,7 +18,7 @@ const job: CodingJob = {
   prTitle: "[APP-42] Change",
 };
 const report: AgentReport = {
-  summary: "done", termination: "finished", changedFiles: ["a.ts"], diff: "diff", testRuns: [], events: [],
+  summary: "done", termination: "finished", stepsUsed: 2, changedFiles: ["a.ts"], diff: "diff", testRuns: [], events: [],
 };
 const result: GuillermoRunResult = {
   report,
