@@ -51,9 +51,12 @@ test("Terraform captures the required single-instance security architecture", as
     "aws_lb_target_group", "/healthz", "aws_lb_target_group_attachment", "aws_iam_instance_profile",
     "AmazonSSMManagedInstanceCore", "secretsmanager:GetSecretValue", "ecr:BatchGetImage",
     "aws_vpc_security_group_ingress_rule", "referenced_security_group_id", "3000",
+    "aws_lb_listener_rule", "fixed-response", "http_request_method", "/webhooks/jira",
+    "ignore_changes = [user_data_base64]",
   ]) assert.match(terraform, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.doesNotMatch(terraform, /from_port\s*=\s*22|secret_value|private_key\s*=/);
+  assert.doesNotMatch(terraform, /from_port\s*=\s*(22|80)|resource "aws_lb_listener" "http_redirect"|secret_value|private_key\s*=/);
   assert.match(terraform, /var\.release_tag != "latest"/);
+  assert.doesNotMatch(terraform, /allowed_https_cidrs[\s\S]{0,200}\["0\.0\.0\.0\/0"\]/);
 });
 
 test("bootstrap blocks container IMDS, provisions restrictive paths, and uses systemd", async () => {

@@ -59,9 +59,21 @@ variable "route53_hosted_zone_id" {
 }
 
 variable "allowed_https_cidrs" {
-  description = "IPv4 CIDRs allowed to reach ALB ports 80/443. Jira Cloud delivery ranges must be included."
+  description = "IPv4 CIDRs allowed to reach the ALB HTTPS listener. Keep these synchronized with Atlassian's published outgoing-connection ranges."
   type        = list(string)
-  default     = ["0.0.0.0/0"]
+  default = [
+    "13.200.41.128/25",
+    "13.236.8.224/28",
+    "16.63.53.128/25",
+    "18.136.214.96/28",
+    "18.184.99.224/28",
+    "18.234.32.224/28",
+    "18.246.31.224/28",
+    "43.202.69.0/25",
+    "52.215.192.224/28",
+    "104.192.136.0/21",
+    "185.166.140.0/22",
+  ]
 }
 
 variable "runtime_secret_arn" {

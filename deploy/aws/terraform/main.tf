@@ -112,16 +112,6 @@ resource "aws_vpc_security_group_ingress_rule" "alb_https" {
   ip_protocol       = "tcp"
 }
 
-resource "aws_vpc_security_group_ingress_rule" "alb_http" {
-  for_each          = toset(var.allowed_https_cidrs)
-  security_group_id = aws_security_group.alb.id
-  description       = "HTTP redirect clients"
-  cidr_ipv4         = each.value
-  from_port         = 80
-  to_port           = 80
-  ip_protocol       = "tcp"
-}
-
 resource "aws_vpc_security_group_egress_rule" "alb_to_instance" {
   security_group_id            = aws_security_group.alb.id
   referenced_security_group_id = aws_security_group.instance.id
@@ -188,21 +178,34 @@ resource "aws_lb_listener" "https" {
   certificate_arn   = var.acm_certificate_arn
 
   default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.coordinator.arn
+    type = "fixed-response"
+
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "Not found"
+      status_code  = "404"
+    }
   }
 }
 
-resource "aws_lb_listener" "http_redirect" {
-  load_balancer_arn = aws_lb.this.arn
-  port              = 80
-  protocol          = "HTTP"
-  default_action {
-    type = "redirect"
-    redirect {
-      port        = "443"
-      protocol    = "HTTPS"
-      status_code = "HTTP_301"
+resource "aws_lb_listener_rule" "jira_webhook" {
+  listener_arn = aws_lb_listener.https.arn
+  priority     = 100
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.coordinator.arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["/webhooks/jira"]
+    }
+  }
+
+  condition {
+    http_request_method {
+      values = ["POST"]
     }
   }
 }
@@ -240,6 +243,13 @@ resource "aws_instance" "coordinator" {
     render_runtime_script_base64 = base64encode(file("${path.module}/../render-runtime-env.sh"))
   }))
   user_data_replace_on_change = false
+
+  # Cloud-init is a create-time bootstrap. Updating the stored EC2 user data
+  # neither reruns it nor safely updates the live host; use an explicit instance
+  # replacement when bootstrap changes must be installed on an existing host.
+  lifecycle {
+    ignore_changes = [user_data_base64]
+  }
 
   tags = { Name = "guillermo-coordinator" }
 

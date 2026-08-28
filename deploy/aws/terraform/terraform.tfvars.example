@@ -7,7 +7,19 @@ instance_architecture = "x86_64"
 acm_certificate_arn   = "arn:aws:acm:eu-central-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
 dns_name              = "guillermo.example.com"
 route53_hosted_zone_id = "Z0000000000000000000"
-allowed_https_cidrs   = ["0.0.0.0/0"]
+allowed_https_cidrs = [
+  "13.200.41.128/25",
+  "13.236.8.224/28",
+  "16.63.53.128/25",
+  "18.136.214.96/28",
+  "18.184.99.224/28",
+  "18.234.32.224/28",
+  "18.246.31.224/28",
+  "43.202.69.0/25",
+  "52.215.192.224/28",
+  "104.192.136.0/21",
+  "185.166.140.0/22",
+]
 runtime_secret_arn    = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:guillermo/runtime-xxxxxx"
 github_private_key_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:guillermo/github-app-key-xxxxxx"
 secret_kms_key_arns   = []

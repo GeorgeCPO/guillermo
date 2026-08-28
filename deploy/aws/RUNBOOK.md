@@ -25,7 +25,7 @@ Always supply `dns_name`. If Route 53 hosts the domain, also supply `route53_hos
 
 The ALB subnets must be public and route to an internet gateway. The EC2 subnet does not need inbound internet access, a public IP, SSH, or a key pair, but it must reach AWS APIs, ECR, GitHub, OpenAI, package repositories, and npm. A NAT gateway is the simplest private-subnet design. VPC endpoints can reduce some NAT paths but do not replace internet access required by GitHub, OpenAI, and npm.
 
-Choose `allowed_https_cidrs`. `0.0.0.0/0` is compatible with changing Jira Cloud egress addresses but exposes the authenticated endpoint to the internet. Narrow it only if your Jira delivery source has stable documented ranges. Port 3000 is allowed solely from the ALB security group; port 22 is never opened.
+Keep `allowed_https_cidrs` synchronized with Atlassian's published summary IPv4 ranges for outgoing connections. These ranges are shared Atlassian infrastructure and can include user-configurable Forge traffic, so they supplement rather than replace the tenant-specific webhook secret. The ALB exposes only HTTPS port 443; port 3000 is allowed solely from the ALB security group, and port 22 is never opened.
 
 ## 3. Create secret values outside Terraform
 
@@ -151,16 +151,21 @@ No SSH connection or key is involved. On reboot, `guillermo.service` starts the 
 
 ## 7. Verify health and configure Jira
 
-Wait for the target to become healthy, then request only the minimal endpoint:
+Wait for the target to become healthy. The ALB calls `/healthz` directly on the target group, but the public listener intentionally forwards only `POST /webhooks/jira`; any other request that passes the security-group allowlist receives the listener's fixed `404` response. Requests from outside the Atlassian CIDRs are dropped before reaching the listener.
 
 ```bash
-curl --fail --silent --show-error "$HTTPS_ENDPOINT/healthz"
 aws elbv2 describe-target-health \
   --region "$AWS_REGION" \
   --target-group-arn "$(cd deploy/aws/terraform && terraform output -raw target_group_arn)"
+
+aws ssm send-command \
+  --region "$AWS_REGION" \
+  --instance-ids "$INSTANCE_ID" \
+  --document-name AWS-RunShellScript \
+  --parameters 'commands=["curl --fail --silent --show-error http://127.0.0.1:3000/healthz"]'
 ```
 
-The body must be exactly `{"status":"ok"}` (JSON whitespace aside). It intentionally contains no project, job, repository, Docker, workspace, or configuration details.
+Target health must be `healthy`; the local health body must be exactly `{"status":"ok"}` (JSON whitespace aside). It intentionally contains no project, job, repository, Docker, workspace, or configuration details.
 
 In Jira Automation, create a rule for comment creation and a **Send web request** action:
 
