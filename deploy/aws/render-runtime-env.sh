@@ -11,6 +11,12 @@ jq -er '
     .[$name] as $value
     | if ($value | type) != "string" or ($value | length) == 0 or ($value | (contains("\r") or contains("\n") or contains("\u0000")))
       then error("invalid " + $name) else $value end;
+  def optional_max_steps:
+    .GUILLERMO_MAX_STEPS as $value
+    | if $value == null then empty
+      elif ($value | type) != "string" or ($value | test("^(?:[1-9]|[1-4][0-9]|50)$") | not)
+        then error("GUILLERMO_MAX_STEPS must be a string containing an integer from 1 to 50")
+      else "GUILLERMO_MAX_STEPS=" + $value end;
   if (.GUILLERMO_JIRA_PROJECTS | type) != "object" then error("GUILLERMO_JIRA_PROJECTS must be an object") else . end
   | [
       "OPENAI_API_KEY=" + line("OPENAI_API_KEY"),
@@ -19,7 +25,8 @@ jq -er '
       "GUILLERMO_GITHUB_APP_ID=" + line("GUILLERMO_GITHUB_APP_ID"),
       "GUILLERMO_GITHUB_APP_INSTALLATION_ID=" + line("GUILLERMO_GITHUB_APP_INSTALLATION_ID"),
       "GUILLERMO_GIT_AUTHOR_NAME=" + line("GUILLERMO_GIT_AUTHOR_NAME"),
-      "GUILLERMO_GIT_AUTHOR_EMAIL=" + line("GUILLERMO_GIT_AUTHOR_EMAIL")
+      "GUILLERMO_GIT_AUTHOR_EMAIL=" + line("GUILLERMO_GIT_AUTHOR_EMAIL"),
+      optional_max_steps
     ] | .[]
 ' "$input_json" >"$output_env"
 

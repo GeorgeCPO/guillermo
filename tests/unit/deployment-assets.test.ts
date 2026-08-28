@@ -94,6 +94,9 @@ test("release and deployment scripts reject latest and do not put secrets in arg
   assert.match(host, /get-login-password[^\n]*\| docker login[^\n]*--password-stdin/);
   assert.match(host, /get-secret-value[\s\S]*>"\$runtime_response"/);
   assert.doesNotMatch(host, /--secret-string|echo .*OPENAI|echo .*PRIVATE/);
+  const renderer = await readFile(asset("deploy/aws/render-runtime-env.sh"), "utf8");
+  assert.match(renderer, /GUILLERMO_MAX_STEPS/);
+  assert.match(renderer, /\[1-4\]\[0-9\]\|50/);
 });
 
 test("secret rendering local simulation emits no secret output", async () => {

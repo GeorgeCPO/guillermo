@@ -47,11 +47,13 @@ Create two local files outside the repository. Do not paste secret values into T
   "GUILLERMO_GITHUB_APP_ID": "123456",
   "GUILLERMO_GITHUB_APP_INSTALLATION_ID": "789012",
   "GUILLERMO_GIT_AUTHOR_NAME": "Guillermo Bot",
-  "GUILLERMO_GIT_AUTHOR_EMAIL": "guillermo-bot@example.com"
+  "GUILLERMO_GIT_AUTHOR_EMAIL": "guillermo-bot@example.com",
+  "GUILLERMO_MAX_STEPS": "20"
 }
 ```
 
 `GUILLERMO_JIRA_PROJECTS` is a JSON object, not a string containing JSON. IDs are strings of decimal digits. All scalar values must be non-empty single lines. Protect the file with `chmod 600`.
+`GUILLERMO_MAX_STEPS` is optional and must be a string containing an integer from `1` through `50`; when omitted, Guillermo uses its application default of `20`. Higher values allow longer jobs but can increase OpenAI usage, runtime, and cost.
 
 The second file, `/secure/path/github-app-private-key.pem`, is the raw PEM downloaded from GitHub. It is the entire Secrets Manager `SecretString`, not JSON or base64. Protect it with `chmod 600`.
 
