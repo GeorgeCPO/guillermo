@@ -1,4 +1,8 @@
-# Guillermo Stage 10.5: single-EC2 deployment and CloudWatch Logs runbook
+# AWS deployment runbook: single EC2 host, CloudWatch Logs
+
+> Part of the [Guillermo](../../README.md) documentation. New to the project? Read the [README](../../README.md) and [local setup](../../docs/local-setup.md) first; this runbook is for deploying and operating the webhook service on AWS. ("Stage 10.5" refers to the stage of the learning project that introduced this deployment.)
+
+**Contents:** [1 Prerequisites](#1-prerequisites-and-costs) · [2 DNS and network](#2-certificate-dns-and-network-prerequisites) · [3 Secrets](#3-create-secret-values-outside-terraform) · [4 Terraform](#4-configure-and-apply-terraform) · [5 Build and publish](#5-build-and-publish-the-immutable-release) · [6 Deploy](#6-deploy-through-systems-manager) · [7 Verify and Jira](#7-verify-health-and-configure-jira) · [8 Logs and administration](#8-administration-and-logs) · [9 Update and roll back](#9-update-and-roll-back) · [10 Rotate secrets](#10-rotate-secrets-and-keys) · [11 Clean workspaces](#11-clean-workspace-data) · [12 Destroy](#12-destroy)
 
 This runbook deploys one dedicated Amazon Linux 2023 EC2 host, one persistent trusted coordinator container, and ephemeral worker containers. Terraform creates the EC2, IAM, ECR, ALB, security-group, target-group, CloudWatch log group, and optional Route 53 resources. It does not create or read secret values.
 
@@ -165,8 +169,8 @@ Terraform deliberately ignores in-place EC2 `user_data_base64` changes because c
 ```bash
 cd <repository-root>
 export AWS_REGION=eu-central-1
-export INSTANCE_ID=i-006a8c635d7ce0256
-export RELEASE_TAG=1d3631ddfed6edf40bf2c908cb1096818e75afb9
+export INSTANCE_ID=i-0123456789abcdef0   # terraform output -raw instance_id
+export RELEASE_TAG=$(git rev-parse HEAD) # an already-published release
 export COORDINATOR_LOG_GROUP_NAME=$(cd deploy/aws/terraform && terraform output -raw coordinator_log_group_name)
 ./deploy/aws/update-host-assets-via-ssm.sh
 ```
